@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "ContextGuard",
+  "version": "1.0.0",
+  "description": "Restore PR context instantly with AI-powered summaries",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://github.com/*/*",
+    "https://*.beanstalkapp.com/*/*",
+    "http://localhost:8080/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*/pull/*"],
+      "js": ["content/github-content.js"],
+      "css": ["styles/sidebar.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.beanstalkapp.com/*/changesets/*"],
+      "js": ["content/beanstalk-content.js"],
+      "css": ["styles/sidebar.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}
+
