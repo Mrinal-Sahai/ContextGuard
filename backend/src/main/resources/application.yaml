@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: contextguard
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:contextguard}
+    username: ${POSTGRES_USER:cguser}
+    password: ${POSTGRES_PASSWORD:cgpass}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+    ddl-auto: validate
+  properties:
+    hibernate:
+      dialect: org.hibernate.dialect.PostgreSQLDialect
+      format_sql: true
+  show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: 8080
+
+contextguard:
+  webhook:
+    github:
+      secret: ${GITHUB_WEBHOOK_SECRET:dev-secret-github}
+    beanstalk:
+      secret: ${BEANSTALK_WEBHOOK_SECRET:dev-secret-beanstalk}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    bucket: ${MINIO_BUCKET:contextguard-diffs}
+  llm:
+    provider: ${LLM_PROVIDER:stub}
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      model: gpt-4o-mini
+  notifications:
+    slack:
+      webhook-url: ${SLACK_WEBHOOK_URL:http://localhost:3000/webhook}
+  scoring:
+    decay-threshold: 40
+    inactivity-hours: 24
+
+logging:
+  level:
+    io.contextguard: INFO
+    org.springframework.web: INFO
