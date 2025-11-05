@@ -1,0 +1,13 @@
+{
+  "name": "mock-slack-receiver",
+  "version": "1.0.0",
+  "description": "Mock Slack webhook receiver for ContextGuard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+
