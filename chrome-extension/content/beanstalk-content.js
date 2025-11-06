@@ -45,28 +45,32 @@ class BeanstalkContextGuard {
     };
   }
 
-  async fetchReviewData(reviewInfo) {
-    const { platform, owner, repo, externalId } = reviewInfo;
-    const apiUrl = `${this.config.backendUrl}/v1/reviews/${platform}/${owner}/${repo}/${externalId}`;
+async fetchReviewData(prInfo) {
+  const { platform, owner, repo, externalId } = prInfo;
 
-    try {
-      const headers = {};
-      if (this.config.token) {
-        headers['Authorization'] = `Bearer ${this.config.token}`;
-      }
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          action: 'fetchApi',
+          method: 'GET',
+          url: `/v1/reviews/${platform}/${owner}/${repo}/${externalId}`,
+          token: this.config.token
+        },
+        (res) => {
+          if (res.error) reject(res.error);
+          else resolve(res);
+        }
+      );
+    });
 
-      const response = await fetch(apiUrl, { headers });
-
-      if (response.ok) {
-        this.reviewData = await response.json();
-        console.log('ContextGuard: Fetched review data', this.reviewData);
-      } else {
-   this.reviewData = null;
-      }
-    } catch (error) {
-      console.error('ContextGuard: Failed to fetch review data', error);
-    }
+    this.reviewData = response;
+    console.log('ContextGuard: Fetched review data', this.reviewData);
+  } catch (error) {
+    console.error('ContextGuard: Failed to fetch review data', error);
+    this.reviewData = null;
   }
+}
 
   injectSidebar() {
     // Similar implementation to GitHub

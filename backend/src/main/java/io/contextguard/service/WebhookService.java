@@ -7,6 +7,10 @@ import io.contextguard.repository.ReviewRepository;
 import io.contextguard.repository.SnapshotRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import javax.crypto.Mac;
@@ -108,7 +112,13 @@ public class WebhookService {
         String diffKey = String.format("diffs/%s/%s/%s/%s.diff",
                 review.getPlatform(), review.getOwner(),
                 review.getRepository(), review.getExternalId());
-        minioService.uploadDiff(diffKey, "Mock diff content");
+        String diffContent = getGithubDiff(
+                review.getOwner(),
+                review.getRepository(),
+                payload.getPullRequest().getBase().getSha(),
+                payload.getPullRequest().getHead().getSha()
+        );
+        minioService.uploadDiff(diffKey, diffContent);
         snapshot.setDiffUrl(diffKey);
 
         snapshotRepository.save(snapshot);
@@ -172,4 +182,18 @@ public class WebhookService {
         }
         return sb.toString();
     }
+
+    public String getDiff(String owner, String repo, String base, String head) {
+        String url = String.format("https://api.github.com/repos/%s/%s/compare/%s...%s",
+                owner, repo, base, head);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Accept", "application/vnd.github.v3.diff");
+        headers.setBearerAuth(githubToken);
+
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+        ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+        return response.getBody();
+    }
+
 }

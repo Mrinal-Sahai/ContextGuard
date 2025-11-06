@@ -47,30 +47,30 @@ class GitHubContextGuard {
   }
 
   async fetchReviewData(prInfo) {
-    const { platform, owner, repo, externalId } = prInfo;
-    const apiUrl = `${this.config.backendUrl}/v1/reviews/${platform}/${owner}/${repo}/${externalId}`;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          action: 'fetchApi',
+          method: 'GET',
+          url: `/v1/reviews/${prInfo.platform}/${prInfo.owner}/${prInfo.repo}/${prInfo.externalId}`,
+          token: this.config.token
+        },
+        (res) => {
+          if (res.error) reject(res.error);
+          else resolve(res);
+        }
+      );
+    });
 
-    try {
-      const headers = {};
-      if (this.config.token) {
-        headers['Authorization'] = `Bearer ${this.config.token}`;
-      }
-
-      const response = await fetch(apiUrl, { headers });
-
-      if (response.ok) {
-        this.reviewData = await response.json();
-        console.log('ContextGuard: Fetched review data', this.reviewData);
-      } else if (response.status === 404) {
-        console.log('ContextGuard: No context artifact found');
-        this.reviewData = null;
-      } else {
-        console.error('ContextGuard: API error', response.status);
-      }
-    } catch (error) {
-      console.error('ContextGuard: Failed to fetch review data', error);
-    }
+    this.reviewData = response;
+    console.log('ContextGuard: Fetched review data', this.reviewData);
+  } catch (error) {
+    console.error('ContextGuard: Failed to fetch review data', error);
+    this.reviewData = null;
   }
+}
+
 
   escapeHtml(text) {
     const div = document.createElement('div');

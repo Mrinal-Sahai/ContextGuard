@@ -3,15 +3,12 @@
   "name": "ContextGuard",
   "version": "1.0.0",
   "description": "Restore PR context instantly with AI-powered summaries",
-  "permissions": [
-    "storage",
-    "activeTab"
-  ],
+  "permissions": ["storage", "tabs", "webRequest"],
   "host_permissions": [
     "https://github.com/*/*",
     "https://*.beanstalkapp.com/*/*",
-    "http://localhost:8080/*"
-  ],
+    "http://localhost:8080/*",
+     "https://jarred-retentive-chagrinedly.ngrok-free.dev/*"],
   "background": {
     "service_worker": "background/service-worker.js"
   },
