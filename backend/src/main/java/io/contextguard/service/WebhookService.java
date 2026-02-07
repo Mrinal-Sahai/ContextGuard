@@ -112,12 +112,7 @@ public class WebhookService {
         String diffKey = String.format("diffs/%s/%s/%s/%s.diff",
                 review.getPlatform(), review.getOwner(),
                 review.getRepository(), review.getExternalId());
-        String diffContent = getGithubDiff(
-                review.getOwner(),
-                review.getRepository(),
-                payload.getPullRequest().getBase().getSha(),
-                payload.getPullRequest().getHead().getSha()
-        );
+        String diffContent = "";
         minioService.uploadDiff(diffKey, diffContent);
         snapshot.setDiffUrl(diffKey);
 
@@ -189,10 +184,10 @@ public class WebhookService {
 
         HttpHeaders headers = new HttpHeaders();
         headers.set("Accept", "application/vnd.github.v3.diff");
-        headers.setBearerAuth(githubToken);
+        headers.setBearerAuth("");
 
         HttpEntity<String> entity = new HttpEntity<>(headers);
-        ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+        ResponseEntity<String> response = null;
         return response.getBody();
     }
 
