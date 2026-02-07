@@ -1,0 +1,65 @@
+/* src/components/PRIntelligenceDashboard.css - UPDATED */
+
+.pr-intelligence-dashboard {
+  width: 100%;
+  max-width: 100%;  /* Remove max-width constraint */
+  margin: 0;
+  padding: 0;
+  background: #f8fafc;
+  min-height: 100vh;
+}
+
+/* Inner container for content padding */
+.dashboard-content {
+  max-width: 1600px;  /* Wider max-width for larger screens */
+  margin: 0 auto;
+  padding: 24px;
+}
+
+/* Update main content grid for better space usage */
+.main-content-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;  /* Slightly more space for change map */
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+/* Full-width sections */
+.executive-summary,
+.change-narrative,
+.reviewer-checklist {
+  width: 100%;
+}
+
+/* Optimize for large screens */
+@media (min-width: 1400px) {
+  .dashboard-content {
+    padding: 32px 48px;
+  }
+
+  .main-content-grid {
+    gap: 32px;
+  }
+
+  section {
+    padding: 32px;
+  }
+}
+
+/* Medium screens */
+@media (max-width: 1200px) {
+  .main-content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Small screens */
+@media (max-width: 768px) {
+  .dashboard-content {
+    padding: 16px;
+  }
+
+  section {
+    padding: 20px;
+  }
+}

@@ -141,9 +141,27 @@ public class AIGenerationService {
     }
 
     private String extractSection(String text, String section) {
-        // Parse structured output sections
-        return "..."; // Implementation omitted
+        if (text == null || section == null) {
+            return "";
+        }
+        String regex = "(?s)"
+                               + section + "\\s*:\\s*"
+                               + "(.*?)"
+                               + "(?=\\n[A-Z_]+\\s*:|\\z)";
+
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(regex);
+        java.util.regex.Matcher matcher = pattern.matcher(text);
+        if (!matcher.find()) {
+            return "";
+        }
+        String content = matcher.group(1).trim();
+        if (content.equalsIgnoreCase("none") ||
+                    content.matches("(?i)-\\s*none")) {
+            return "";
+        }
+        return content;
     }
+
 
     private String formatFileTypes(Map<String, Integer> distribution) {
         return distribution.entrySet().stream()

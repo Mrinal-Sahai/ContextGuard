@@ -1,0 +1,100 @@
+/* src/components/FileTypeChart.css */
+
+.file-type-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.file-type-row {
+  display: grid;
+  grid-template-columns: 100px 1fr 120px;
+  align-items: center;
+  gap: 12px;
+}
+
+/* File type label */
+.file-type-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+}
+
+.file-type-icon {
+  font-size: 16px;
+}
+
+.file-type-name {
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.05em;
+}
+
+/* Bar container and bar */
+.file-type-bar-container {
+  position: relative;
+  height: 24px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.file-type-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  min-width: 2px; /* Ensure even 1% is visible */
+}
+
+/* Stats (count and percentage) */
+.file-type-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  justify-content: flex-end;
+}
+
+.file-count {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.file-percentage {
+  color: #64748b;
+  font-size: 12px;
+}
+
+/* Total count footer */
+.file-type-total {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  text-align: right;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .file-type-row {
+    grid-template-columns: 80px 1fr 100px;
+    gap: 8px;
+  }
+
+  .file-type-label {
+    font-size: 12px;
+  }
+
+  .file-type-icon {
+    font-size: 14px;
+  }
+
+  .file-type-bar-container {
+    height: 20px;
+  }
+}
