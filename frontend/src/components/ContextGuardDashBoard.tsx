@@ -7,7 +7,7 @@ import ExecutiveSummary from './ExecutiveSummary';
 import ChangeMapSection from './ChangeMapSection';
 import RiskAnalysisPanel from './RiskAnalysisPanel';
 import ChangeNarrative from './ChangeNarrative';
-import ReviewerChecklist from './ReviewerChecklist';
+import DiagramPanel from './DiagramPanel';
 import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
 import BlastRadiusPanel from './BlastRadiusPanel';
@@ -74,7 +74,8 @@ const PRIntelligenceDashboard: React.FC = () => {
            <DifficultyIndicator difficulty={data.difficulty} risk={data.risk} metrics={data.metrics} />
            </div>
 
-        <ChangeNarrative narrative={data.narrative} />        
+        <ChangeNarrative narrative={data.narrative} />   
+        <DiagramPanel analysisId={data.analysisId} />     
       </div>
     </div>
   );

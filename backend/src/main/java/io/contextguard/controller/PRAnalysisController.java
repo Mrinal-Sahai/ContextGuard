@@ -41,11 +41,11 @@ public class PRAnalysisController {
      */
     @PostMapping("/analyze")
     public ResponseEntity<ApiResponse<PRAnalysisResponse>> analyzePR(
-            @Valid @RequestBody PRAnalysisRequest request) {
+            @Valid @RequestBody PRAnalysisRequest request, @RequestParam(required = false) String aiProvider, @RequestParam(required = false) String githubToken) {
 
         try {
 
-            PRAnalysisResponse response = orchestrator.analyzeOrRetrieve(request);
+            PRAnalysisResponse response = orchestrator.analyzeOrRetrieve(request, githubToken);
 
 
 

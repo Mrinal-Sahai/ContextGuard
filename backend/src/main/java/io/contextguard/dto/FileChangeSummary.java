@@ -16,4 +16,8 @@ public class FileChangeSummary {
     private int linesDeleted;
     private int complexityDelta;
     private  RiskLevel riskLevel;
+    private String methodSignatures;
+    private String beforeSnippet;
+    private String afterSnippet;
+    private String reason;
 }

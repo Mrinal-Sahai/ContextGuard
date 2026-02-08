@@ -49,6 +49,15 @@ public class PRAnalysisResult {
     @Column(nullable = false)
     private Instant analyzedAt;
 
+    @Column(columnDefinition = "TEXT")
+    private String mermaidDiagram;
+
+    @Column(columnDefinition = "TEXT")
+    private String diagramVerificationNotes;
+
+    @Column(columnDefinition = "JSONB")
+    private String diagramMetrics;
+
     public void setIntelligence(PRIntelligenceResponse intelligence) {
         // Serialize to JSON using Jackson
         this.intelligenceJson = serializeToJson(intelligence);

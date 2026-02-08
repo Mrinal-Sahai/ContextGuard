@@ -3,10 +3,7 @@ package io.contextguard.service;
 import io.contextguard.client.AIClient;
 import io.contextguard.client.AIProvider;
 import io.contextguard.client.AIRouter;
-import io.contextguard.dto.AIGeneratedNarrative;
-import io.contextguard.dto.DiffMetrics;
-import io.contextguard.dto.PRMetadata;
-import io.contextguard.dto.RiskAssessment;
+import io.contextguard.dto.*;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -71,19 +68,37 @@ public class AIGenerationService {
      * - Specify output structure explicitly
      * - Prohibit code generation or recommendations
      */
-    private String buildPrompt(PRMetadata metadata, DiffMetrics metrics, RiskAssessment risk) {
+    private String buildPrompt(
+            PRMetadata metadata,
+            DiffMetrics metrics,
+            RiskAssessment risk) {
 
-        return String.format(promptTemplate,
+        String fileSummaries = formatFileSummaries(
+                metrics.getFileChanges().stream()
+                        .filter(f -> f.getBeforeSnippet() != null || f.getAfterSnippet() != null)
+                        .toList()
+        );
+
+        return String.format(
+                promptTemplate,
                 metadata.getTitle(),
+                safe(metadata.getBody()),
+                metadata.getBaseBranch(),
+                metadata.getHeadBranch(),
                 metrics.getTotalFilesChanged(),
                 metrics.getLinesAdded(),
                 metrics.getLinesDeleted(),
                 formatFileTypes(metrics.getFileTypeDistribution()),
                 risk.getLevel(),
-                formatCriticalFiles(metrics.getCriticalFiles())
+                formatCriticalFiles(metrics.getCriticalFiles()),
+                fileSummaries
         );
-
     }
+
+    private String safe(String s) {
+        return s == null ? "Not provided." : s;
+    }
+
 
     /**
      * Sanitize AI response to prevent code injection or excessive content.
@@ -109,36 +124,101 @@ public class AIGenerationService {
     }
 
     private String loadPromptTemplate() {
-        return  """
-         Analyze this GitHub pull request and generate a summary.
-         PR Title: %s
-         Files Changed: %d
-         Lines Added: %d
-         Lines Deleted: %d
-         File Types: %s
-         Risk Level: %s
-         Critical Files: %s
+        return """
+You are generating a **technical pull request summary** for a software engineer.
 
-         Generate output in EXACTLY this format:
+You will receive **structured data only** (no raw diffs, no full files).
+You must base your summary **strictly on the provided information**.
 
-         OVERVIEW:
-         [One-sentence summary]
+━━━━━━━━━━━━━━━━━━━━━
+PULL REQUEST CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
 
-         KEY_CHANGES:
-         - [Change 1]
-         - [Change 2]
-         - [Change 3]
+PR Title:
+%s
 
-         CONCERNS:
-         - [Concern 1]
-         - [Concern 2]
+PR Description (written by the author):
+%s
 
-         RULES:
-         - Do NOT include code snippets
-         - Do NOT make recommendations
-         - Maximum 300 words total
-         """;
+Base Branch → Head Branch:
+%s → %s
+
+━━━━━━━━━━━━━━━━━━━━━━
+CHANGE METRICS
+━━━━━━━━━━━━━━━━━━━━━━
+
+Files changed: %d
+Lines added: %d
+Lines deleted: %d
+File types involved: %s
+Overall risk level: %s
+Critical files detected: %s
+
+━━━━━━━━━━━━━━━━━━━━━━
+FILE-LEVEL CHANGE DETAILS
+━━━━━━━━━━━━━━━━━━━━━━
+
+Below are summaries of the most relevant file changes.
+Some files include small **before/after code snippets** (truncated and contextual).
+
+%s
+
+━━━━━━━━━━━━━━━━━━━━━━
+INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━
+
+Generate a clear, high-signal PR summary that helps a reviewer understand:
+- WHAT changed
+- WHY it changed
+- HOW behavior differs before vs after (when snippets are available)
+
+━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT (STRICT)
+━━━━━━━━━━━━━━━━━━━━━━
+
+OVERVIEW:
+- 3–5 sentences describing the intent and scope of the PR.
+- Ground your summary in the PR description and affected areas.
+- Mention key modules/files when relevant.
+
+BEFORE_BEHAVIOR:
+- Describe system behavior before this PR.
+- Use before-snippets if available.
+- If behavior cannot be determined, write: "Not determinable from provided context."
+
+AFTER_BEHAVIOR:
+- Describe system behavior after this PR.
+- Use after-snippets if available.
+- If behavior cannot be determined, write: "Not determinable from provided context."
+
+KEY_CHANGES:
+- Bullet list of concrete changes.
+- Each bullet MUST reference a filename.
+- Focus on behavior or configuration changes, not syntax.
+
+POTENTIAL_CONCERNS:
+- Bullet list of risks, edge cases, or review points.
+- Base concerns ONLY on provided risk level, complexity, or test impact.
+- Do NOT suggest fixes or improvements.
+
+CHECKLIST:
+- Bullet list of checks that user must perform after merging.
+
+━━━━━━━━━━━━━━━━━━━━━━
+STRICT RULES
+━━━━━━━━━━━━━━━━━━━━━━
+
+- Do NOT include code blocks or code suggestions.
+- Do NOT make recommendations or implementation advice.
+- Do NOT invent behavior or infer beyond the given context.
+- If information is missing, explicitly say it is not determinable.
+- Keep total output under 400 words.
+- Use clear, professional language suitable for a senior code review.
+
+Now generate the summary.
+""";
     }
+
 
     private String extractSection(String text, String section) {
         if (text == null || section == null) {
@@ -172,4 +252,33 @@ public class AIGenerationService {
     private String formatCriticalFiles(List<String> files) {
         return files.isEmpty() ? "None" : String.join(", ", files);
     }
+
+    private String formatFileSummaries(List<FileChangeSummary> files) {
+        StringBuilder sb = new StringBuilder();
+
+        for (FileChangeSummary f : files) {
+            sb.append("File: ").append(f.getFilename()).append("\n");
+            sb.append("Change type: ").append(f.getChangeType()).append("\n");
+            sb.append("Risk level: ").append(f.getRiskLevel()).append("\n");
+
+            if (f.getReason() != null && !f.getReason().isBlank()) {
+                sb.append("Reason: ").append(f.getReason()).append("\n");
+            }
+
+            if (f.getBeforeSnippet() != null) {
+                sb.append("Before snippet:\n");
+                sb.append(f.getBeforeSnippet()).append("\n");
+            }
+
+            if (f.getAfterSnippet() != null) {
+                sb.append("After snippet:\n");
+                sb.append(f.getAfterSnippet()).append("\n");
+            }
+
+            sb.append("----\n");
+        }
+
+        return sb.toString();
+    }
+
 }

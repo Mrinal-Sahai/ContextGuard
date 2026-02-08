@@ -85,11 +85,14 @@ export interface RiskBreakdown {
 
 export interface AIGeneratedNarrative {
   overview: string;
+  beforeBehavior?: string;
+  afterBehavior?: string;
   keyChanges: string;
   potentialConcerns: string;
-  generatedAt: string;
-  disclaimer: string;
+  confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
+  disclaimer?: string;
 }
+
 
 export interface DifficultyAssessment {
   overallScore: number;

@@ -1,5 +1,6 @@
 package io.contextguard.service;
 
+import io.contextguard.analysis.flow.AsyncDiagramService;
 import io.contextguard.client.AIProvider;
 import io.contextguard.dto.*;
 import io.contextguard.dto.PRIdentifier;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -22,13 +24,14 @@ public class PRAnalysisOrchestrator {
     private final AIGenerationService aiService;
     private final DifficultyScoringEngine difficultyEngine;
     private final BlastRadiusAnalyzer blastRadiusAnalyzer;
+    private final AsyncDiagramService asyncDiagramService;
 
     public PRAnalysisOrchestrator(
             CacheService cacheService,
             GitHubIngestionService githubService,
             DiffMetadataAnalyzer diffAnalyzer,
             RiskScoringEngine riskEngine,
-            AIGenerationService aiService, DifficultyScoringEngine difficultyEngine, BlastRadiusAnalyzer blastRadiusAnalyzer) {
+            AIGenerationService aiService, DifficultyScoringEngine difficultyEngine, BlastRadiusAnalyzer blastRadiusAnalyzer, AsyncDiagramService asyncDiagramService) {
 
         this.cacheService = cacheService;
         this.githubService = githubService;
@@ -37,10 +40,11 @@ public class PRAnalysisOrchestrator {
         this.aiService = aiService;
         this.difficultyEngine = difficultyEngine;
         this.blastRadiusAnalyzer = blastRadiusAnalyzer;
+        this.asyncDiagramService = asyncDiagramService;
     }
 
     @Transactional
-    public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request) {
+    public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request, String githubToken) {
 
         PRIdentifier prId = parsePRUrl(request.getPrUrl());
 
@@ -61,6 +65,12 @@ public class PRAnalysisOrchestrator {
         PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider());
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
+        asyncDiagramService.generateDiagramAsync(
+                intelligence.getAnalysisId(),
+                result.toResponse().getMetadata(),
+                githubToken
+        );
+
 
         return new PRAnalysisResponse(
                 result.getId(),
@@ -73,8 +83,10 @@ public class PRAnalysisOrchestrator {
 
         PRMetadata metadata = githubService.fetchPRMetadata(prId);
 
-        DiffMetrics metrics = diffAnalyzer.analyzeDiff(
-                githubService.fetchDiffFiles(prId));
+        List<GitHubFile> files = githubService.fetchDiffFiles(prId);
+        DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
+        System.exit(0);
+
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
 

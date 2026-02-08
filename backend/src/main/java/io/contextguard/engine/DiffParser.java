@@ -24,6 +24,8 @@ public class DiffParser {
 
     private static final Pattern ADDED_LINE = Pattern.compile("^\\+(.*)");
     private static final Pattern DELETED_LINE = Pattern.compile("^-(.*)");
+    private static final Pattern HUNK_HEADER = Pattern.compile("^@@\\s*-(\\d+),(\\d+)\\s*\\+(\\d+),(\\d+)\\s*@@.*$");
+
 
     public List<String> extractAddedLines(String patch) {
 
@@ -52,4 +54,37 @@ public class DiffParser {
         }
         return deleted;
     }
+    /**
+     * Parse the unified diff (patch) into a list of DiffHunk objects.
+     */
+    public List<DiffHunk> parseHunks(String patch) {
+        List<DiffHunk> hunks = new ArrayList<>();
+        if (patch == null || patch.isEmpty()) return hunks;
+
+        String[] lines = patch.split("\n");
+        int idx = 0;
+        while (idx < lines.length) {
+            String line = lines[idx];
+            Matcher m = HUNK_HEADER.matcher(line);
+            if (m.matches()) {
+                int oldStart = Integer.parseInt(m.group(1));
+                int oldCount = Integer.parseInt(m.group(2));
+                int newStart = Integer.parseInt(m.group(3));
+                int newCount = Integer.parseInt(m.group(4));
+
+                idx++; // advance to first hunk content line
+                List<String> hunkLines = new ArrayList<>();
+                while (idx < lines.length && !lines[idx].startsWith("@@")) {
+                    hunkLines.add(lines[idx]);
+                    idx++;
+                }
+                DiffHunk h = new DiffHunk(oldStart, oldCount, newStart, newCount, hunkLines);
+                hunks.add(h);
+            } else {
+                idx++;
+            }
+        }
+        return hunks;
+    }
+
 }

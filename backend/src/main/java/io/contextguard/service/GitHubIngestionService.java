@@ -1,5 +1,6 @@
 package io.contextguard.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.contextguard.client.GitHubApiClient;
 import io.contextguard.dto.GitHubFile;
 import io.contextguard.dto.PRIdentifier;
@@ -31,7 +32,6 @@ public class GitHubIngestionService {
      */
     public PRMetadata fetchPRMetadata(PRIdentifier prId) {
 
-        // Call GitHub API: GET /repos/{owner}/{repo}/pulls/{number}
         var prData = apiClient.getPullRequest(
                 prId.getOwner(), prId.getRepo(), prId.getPrNumber());
 
@@ -56,7 +56,7 @@ public class GitHubIngestionService {
     public List<GitHubFile> fetchDiffFiles(PRIdentifier prId) {
 
         // Call GitHub API: GET /repos/{owner}/{repo}/pulls/{number}/files
-        var files = apiClient.getPullRequestFiles(
+        List<JsonNode> files = apiClient.getPullRequestFiles(
                 prId.getOwner(), prId.getRepo(), prId.getPrNumber());
 
         return files.stream()

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.Base64;
 import java.util.List;
 
 /**
@@ -123,10 +124,39 @@ public class GitHubApiClient {
         HttpHeaders headers = new HttpHeaders();
         headers.set("Accept", "application/vnd.github.v3+json");
 
-//        if (token != null && !token.isEmpty()) {
-//            headers.set("Authorization", "Bearer " + token);
-//        }
+        if (token != null && !token.isEmpty()) {
+            headers.set("Authorization", "Bearer " + token);
+        }
 
         return new HttpEntity<>(headers);
+    }
+
+    public String getFileContent(String owner, String repo, String path, String ref) {
+        try {
+            String url = String.format("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+                    owner, repo, path, ref);
+
+            HttpHeaders headers = new HttpHeaders();
+            if (token != null && !token.isBlank()) {
+                headers.set(HttpHeaders.AUTHORIZATION, "token " + token);
+            }
+            headers.set(HttpHeaders.ACCEPT, "application/vnd.github.v3.raw+json");
+            HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+            ResponseEntity<java.util.Map> resp = restTemplate.exchange(url, HttpMethod.GET, entity, java.util.Map.class);
+            if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
+                Object contentObj = resp.getBody().get("content");
+                Object encoding = resp.getBody().get("encoding");
+                if (contentObj instanceof String && "base64".equals(encoding)) {
+                    String base64 = (String) contentObj;
+                    byte[] decoded = Base64.getDecoder().decode(base64.replaceAll("\\s+", ""));
+                    return new String(decoded);
+                }
+            }
+        } catch (Exception e) {
+            // keep conservative: return null if anything goes wrong
+            // In real system, log at debug level
+        }
+        return null;
     }
 }

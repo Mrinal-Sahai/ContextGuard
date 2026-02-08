@@ -1,68 +1,112 @@
-// src/components/ChangeNarrative.tsx
-
-import React from 'react';
+import React, { useState } from 'react';
 import { type AIGeneratedNarrative } from '../types';
 import './ChangeNarrative.css';
 
-interface ChangeNarrativeProps {
+interface Props {
   narrative: AIGeneratedNarrative;
 }
 
-/**
- * AI-generated key changes and concerns.
- * 
- * WHY THIS EXISTS:
- * - Provides human-readable context (complements metrics)
- * - Highlights potential issues reviewer should watch for
- * - Saves reviewer from reading full PR description
- * 
- * DESIGN PRINCIPLE:
- * - Bullet points for scannability
- * - Concerns are visually distinct (warning color)
- * - AI disclaimer is present but subtle
- */
-const ChangeNarrative: React.FC<ChangeNarrativeProps> = ({ narrative }) => {
-  const parseListItems = (text: string): string[] => {
-    return text
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.startsWith('-') || line.startsWith('•'))
-      .map(line => line.replace(/^[-•]\s*/, ''));
-  };
+const ChangeNarrative: React.FC<Props> = ({ narrative }) => {
+  const [activeTab, setActiveTab] = useState<'before' | 'after'>('after');
 
-  const keyChanges = parseListItems(narrative.keyChanges);
-  const concerns = parseListItems(narrative.potentialConcerns);
+  const parseBullets = (text?: string): string[] =>
+    text
+      ? text
+          .split('\n')
+          .map(l => l.trim())
+          .filter(l => l.startsWith('-'))
+          .map(l => l.replace(/^-\s*/, ''))
+      : [];
+
+  const keyChanges = parseBullets(narrative.keyChanges);
+  const concerns = parseBullets(narrative.potentialConcerns);
 
   return (
     <section className="change-narrative">
-      <h2 className="section-title">Key Changes & Concerns</h2>
+      {/* Header */}
+      <header className="narrative-header">
+        <h2>PR Change Summary</h2>
+        {narrative.confidence && (
+          <span className={`confidence-badge ${narrative.confidence.toLowerCase()}`}>
+            Confidence: {narrative.confidence}
+          </span>
+        )}
+      </header>
 
-      <div className="narrative-grid">
-        {/* Key Changes */}
-        <div className="narrative-column">
-          <h3 className="subsection-title">What Changed:</h3>
-          <ul className="narrative-list">
-            {keyChanges.map((item, index) => (
-              <li key={index} className="narrative-item">{item}</li>
+      {/* Overview */}
+      {narrative.overview && (
+        <section className="overview">
+          <h3>Intent & Scope</h3>
+          <p>{narrative.overview}</p>
+        </section>
+      )}
+
+      {/* Before / After */}
+      {(narrative.beforeBehavior || narrative.afterBehavior) && (
+        <section className="behavior-section">
+          <div className="tab-header">
+            <button
+              className={activeTab === 'before' ? 'active' : ''}
+              onClick={() => setActiveTab('before')}
+            >
+              Before
+            </button>
+            <button
+              className={activeTab === 'after' ? 'active' : ''}
+              onClick={() => setActiveTab('after')}
+            >
+              After
+            </button>
+          </div>
+
+          <div className="tab-content">
+            {activeTab === 'before' && (
+              <p>{narrative.beforeBehavior || 'Not determinable from provided context.'}</p>
+            )}
+            {activeTab === 'after' && (
+              <p>{narrative.afterBehavior || 'Not determinable from provided context.'}</p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Key Changes */}
+      <section className="changes-section">
+        <h3>Key Changes</h3>
+        {keyChanges.length > 0 ? (
+          <ul>
+            {keyChanges.map((c, i) => (
+              <li key={i}>{c}</li>
             ))}
           </ul>
-        </div>
+        ) : (
+          <p className="muted">No key changes identified.</p>
+        )}
+      </section>
 
-        {/* Potential Concerns */}
-        <div className="narrative-column">
-          <h3 className="subsection-title">Potential Concerns:</h3>
-          <ul className="narrative-list concerns">
-            {concerns.map((item, index) => (
-              <li key={index} className="narrative-item concern">
-                <span className="concern-icon">⚠️</span>
-                {item}
+      {/* Concerns */}
+      <section className="concerns-section">
+        <h3>Potential Concerns</h3>
+        {concerns.length > 0 ? (
+          <ul>
+            {concerns.map((c, i) => (
+              <li key={i}>
+                <span className="warning-icon">⚠️</span>
+                {c}
               </li>
             ))}
           </ul>
-        </div>
-      </div>
+        ) : (
+          <p className="muted">No significant concerns flagged.</p>
+        )}
+      </section>
 
-      <div className="ai-disclaimer">{narrative.disclaimer}</div>
+      {/* Disclaimer */}
+      {narrative.disclaimer && (
+        <footer className="disclaimer">
+          {narrative.disclaimer}
+        </footer>
+      )}
     </section>
   );
 };
