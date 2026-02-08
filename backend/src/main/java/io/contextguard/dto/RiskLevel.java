@@ -1,4 +1,4 @@
-package io.contextguard.service;
+package io.contextguard.dto;
 
 public enum RiskLevel {
     LOW, MEDIUM, HIGH, CRITICAL

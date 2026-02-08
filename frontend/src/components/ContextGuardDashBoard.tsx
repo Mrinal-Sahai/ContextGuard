@@ -10,6 +10,8 @@ import ChangeNarrative from './ChangeNarrative';
 import ReviewerChecklist from './ReviewerChecklist';
 import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
+import BlastRadiusPanel from './BlastRadiusPanel';
+import DifficultyIndicator from './DifficultyIndicator';
 import './ContextGuardDashboard.css';
 
 const PRIntelligenceDashboard: React.FC = () => {
@@ -56,23 +58,23 @@ const PRIntelligenceDashboard: React.FC = () => {
     <div className="pr-intelligence-dashboard">
       <div className="dashboard-content">
         
-        <DashboardHeader metadata={data.metadata} analysisId={data.analysisId} />
-
+        <DashboardHeader metadata={data.metadata} analysisId={data.analysisId} />\
         <ExecutiveSummary
           risk={data.risk}
           metrics={data.metrics}
           narrative={data.narrative}
         />
 
-        <div className="main-content-grid">
-          <ChangeMapSection metrics={data.metrics} />
-          <RiskAnalysisPanel risk={data.risk} metrics={data.metrics} />
-        </div>
-
-        <ChangeNarrative narrative={data.narrative} />
-
-        <ReviewerChecklist risk={data.risk} metrics={data.metrics} />
         
+                <div className="main-content-grid">
+
+          <ChangeMapSection metrics={data.metrics} />
+          <RiskAnalysisPanel risk={data.risk} metrics={data.metrics} difficulty={data.difficulty} />
+          {data.blastRadius && (<BlastRadiusPanel blastRadius={data.blastRadius} />)}
+           <DifficultyIndicator difficulty={data.difficulty} risk={data.risk} metrics={data.metrics} />
+           </div>
+
+        <ChangeNarrative narrative={data.narrative} />        
       </div>
     </div>
   );

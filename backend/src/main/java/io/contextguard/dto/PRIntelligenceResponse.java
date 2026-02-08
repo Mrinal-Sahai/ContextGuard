@@ -27,6 +27,8 @@ public class PRIntelligenceResponse {
     private PRMetadata metadata;
     private DiffMetrics metrics;
     private RiskAssessment risk;
+    private DifficultyAssessment difficulty;
     private AIGeneratedNarrative narrative;
+    private BlastRadiusAssessment blastRadius;
     private Instant analyzedAt;
 }

@@ -41,6 +41,7 @@ const RiskScoreCard: React.FC<RiskScoreCardProps> = ({ risk }) => {
 
   return (
     <div className={`risk-score-card ${levelClass}`}>
+      <div className="risk-score-label">Risk Score</div>
       <div className="risk-score-value">{score}</div>
       <div className="risk-dots">
         {[1, 2, 3, 4, 5].map(i => (

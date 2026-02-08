@@ -12,6 +12,8 @@ export interface PRIntelligenceData {
   metrics: DiffMetrics;
   risk: RiskAssessment;
   narrative: AIGeneratedNarrative;
+  difficulty: DifficultyAssessment;
+  blastRadius?: BlastRadiusAssessment;
   analyzedAt: string;
 }
 
@@ -54,6 +56,7 @@ export interface FileChangeSummary {
   linesAdded: number;
   linesDeleted: number;
   complexityDelta: number;
+   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
 }
 
 export interface RiskAssessment {
@@ -86,4 +89,36 @@ export interface AIGeneratedNarrative {
   potentialConcerns: string;
   generatedAt: string;
   disclaimer: string;
+}
+
+export interface DifficultyAssessment {
+  overallScore: number;
+  estimatedReviewMinutes: number;
+  level: DifficultyLevel;
+  breakdown: DifficultyBreakdown;
+}
+
+export interface DifficultyBreakdown {
+  sizeContribution: number;        // Lines changed
+  spreadContribution: number;      // Number of files
+  cognitiveContribution: number;   // Complexity delta
+  contextContribution: number;     // File type diversity
+}
+
+export const DifficultyLevel = {
+  TRIVIAL: 'TRIVIAL',
+  EASY: 'EASY',
+  MODERATE: 'MODERATE',
+  HARD: 'HARD',
+  VERY_HARD: 'VERY_HARD',
+} as const;
+
+export type DifficultyLevel = typeof DifficultyLevel[keyof typeof DifficultyLevel];
+
+export interface BlastRadiusAssessment {
+  scope: 'LOCALIZED' | 'COMPONENT' | 'MODULE' | 'SYSTEM_WIDE';
+  affectedDirectories: number;
+  affectedModules: number;
+  impactedAreas: string[];
+  assessment: string;
 }

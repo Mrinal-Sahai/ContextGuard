@@ -1,0 +1,255 @@
+/* src/components/BlastRadiusPanel.css */
+
+/**
+ * Blast radius panel styling.
+ * 
+ * DESIGN GOALS:
+ * - Clear visual hierarchy (scope → metrics → details)
+ * - Color-coded by impact level
+ * - Scannable layout
+ */
+
+.blast-radius-panel {
+   display: grid;
+  background: white;
+  border-radius: 12px;
+  padding: 32px;
+  border: 2px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================
+   SCOPE INDICATOR
+   ============================================ */
+
+.scope-indicator {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 20px;
+  border-radius: 12px;
+  border: 3px solid;
+  margin-bottom: 24px;
+  transition: all 0.3s ease;
+}
+
+.scope-indicator:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.scope-icon {
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.scope-info {
+  flex: 1;
+}
+
+.scope-label {
+  font-size: 28px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+  line-height: 1;
+}
+
+.scope-description {
+  font-size: 15px;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+/* ============================================
+   IMPACT METRICS
+   ============================================ */
+
+.impact-metrics {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.impact-metric-card {
+  background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+  padding: 24px;
+  border-radius: 10px;
+  border: 2px solid #e2e8f0;
+  text-align: center;
+  transition: all 0.3s ease;
+  margin: 10px;
+}
+
+.impact-metric-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+  border-color: #cbd5e1;
+}
+
+.impact-metric-card .metric-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+}
+
+.impact-metric-card .metric-value {
+  font-size: 36px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.impact-metric-card .metric-label {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+/* ============================================
+   IMPACTED AREAS
+   ============================================ */
+
+.impacted-areas {
+  margin-bottom: 24px;
+}
+
+.subsection-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+}
+
+.area-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.area-tag {
+  display: inline-block;
+  padding: 8px 16px;
+  background: #f8fafc;
+  border: 2px solid;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  transition: all 0.2s ease;
+}
+
+.area-tag:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================
+   ASSESSMENT SUMMARY
+   ============================================ */
+
+.assessment-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px;
+  background: #f8fafc;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 20px;
+}
+
+.summary-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.summary-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: #1e293b;
+  margin: 0;
+  font-weight: 500;
+}
+
+/* ============================================
+   COORDINATION ALERT
+   ============================================ */
+
+.coordination-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #fef2f2;
+  border: 2px solid #fca5a5;
+  border-radius: 10px;
+}
+
+.coordination-alert .alert-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.coordination-alert .alert-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #991b1b;
+}
+
+/* ============================================
+   RESPONSIVE DESIGN
+   ============================================ */
+
+@media (max-width: 1024px) {
+  .scope-indicator {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .impact-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .blast-radius-panel {
+    padding: 24px;
+  }
+
+  .scope-indicator {
+    padding: 24px;
+  }
+
+  .scope-label {
+    font-size: 24px;
+  }
+
+  .impact-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .impact-metric-card .metric-value {
+    font-size: 32px;
+  }
+}
+
+@media (max-width: 480px) {
+  .scope-label {
+    font-size: 20px;
+  }
+
+  .area-tags {
+    flex-direction: column;
+  }
+
+  .area-tag {
+    text-align: center;
+  }
+}

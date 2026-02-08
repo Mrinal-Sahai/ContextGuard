@@ -3,6 +3,7 @@
 import React from 'react';
 import { type RiskAssessment, type DiffMetrics, type AIGeneratedNarrative } from '../types';
 import RiskScoreCard from './RiskScoreCard';
+import DifficultyIndicator from './DifficultyIndicator';
 import './ExecutiveSummary.css';
 
 interface ExecutiveSummaryProps {
@@ -54,7 +55,6 @@ const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ risk, metrics, narr
       {/* AI Overview */}
       <div className="ai-overview">
         <div className="overview-header">
-          <span className="ai-icon">🤖</span>
           <span className="ai-badge">AI-Generated Summary</span>
         </div>
         <p className="overview-text">{narrative.overview}</p>

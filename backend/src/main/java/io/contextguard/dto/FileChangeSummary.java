@@ -15,4 +15,5 @@ public class FileChangeSummary {
     private int linesAdded;
     private int linesDeleted;
     private int complexityDelta;
+    private  RiskLevel riskLevel;
 }

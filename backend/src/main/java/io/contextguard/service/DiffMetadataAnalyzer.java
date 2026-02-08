@@ -3,6 +3,7 @@ package io.contextguard.service;
 import io.contextguard.dto.DiffMetrics;
 import io.contextguard.dto.FileChangeSummary;
 import io.contextguard.dto.GitHubFile;
+import io.contextguard.dto.RiskLevel;
 import io.contextguard.engine.ComplexityEstimator;
 import io.contextguard.engine.CriticalPathDetector;
 import io.contextguard.engine.DiffParser;
@@ -57,17 +58,18 @@ public class DiffMetadataAnalyzer {
                                                                     Collectors.summingInt(f -> 1)
                                                             ));
 
+        List<String> criticalFiles = criticalPathDetector.detect(files);
+
         // 3. Parse diffs and estimate complexity delta
         List<FileChangeSummary> fileChanges = files.stream()
-                                                      .map(this::analyzeFile)
+                                                      .map(file -> analyzeFile(file, criticalFiles))
                                                       .toList();
 
         int complexityDelta = fileChanges.stream()
                                       .mapToInt(FileChangeSummary::getComplexityDelta)
                                       .sum();
 
-        // 4. Detect critical files
-        List<String> criticalFiles = criticalPathDetector.detect(files);
+
 
         return DiffMetrics.builder()
                        .totalFilesChanged(files.size())
@@ -84,7 +86,7 @@ public class DiffMetadataAnalyzer {
     /**
      * Analyze individual file change.
      */
-    private FileChangeSummary analyzeFile(GitHubFile file) {
+    private FileChangeSummary analyzeFile(GitHubFile file, List<String> criticalFiles) {
 
         // Parse diff hunks to extract added/deleted line content
         List<String> addedLines = diffParser.extractAddedLines(file.getPatch());
@@ -92,6 +94,7 @@ public class DiffMetadataAnalyzer {
 
         // Estimate complexity change (heuristic: count control structures)
         int complexityDelta = complexityEstimator.estimateDelta(addedLines, deletedLines);
+        RiskLevel riskLevel = classifyFileRisk(file, complexityDelta, criticalFiles);
 
         return FileChangeSummary.builder()
                        .filename(file.getFilename())
@@ -99,6 +102,7 @@ public class DiffMetadataAnalyzer {
                        .linesAdded(file.getAdditions())
                        .linesDeleted(file.getDeletions())
                        .complexityDelta(complexityDelta)
+                       .riskLevel(riskLevel)
                        .build();
     }
 
@@ -106,5 +110,30 @@ public class DiffMetadataAnalyzer {
         String filename = file.getFilename();
         int lastDot = filename.lastIndexOf('.');
         return lastDot > 0 ? filename.substring(lastDot + 1) : "unknown";
+    }
+    /**
+     * Classify file-level risk based on multiple factors.
+     *
+     * HIGH: Critical file OR high complexity (>10)
+     * MEDIUM: Moderate complexity (5-10)
+     * LOW: Low complexity (<5)
+     */
+    private RiskLevel classifyFileRisk(
+            GitHubFile file,
+            int complexityDelta,
+            List<String> criticalFiles) {
+
+        boolean isCritical = criticalFiles.contains(file.getFilename());
+        int absComplexity = Math.abs(complexityDelta);
+
+        if (isCritical || absComplexity > 10) {
+            return RiskLevel.HIGH;
+        }
+
+        if (absComplexity >= 5) {
+            return RiskLevel.MEDIUM;
+        }
+
+        return RiskLevel.LOW;
     }
 }

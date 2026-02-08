@@ -3,6 +3,7 @@ package io.contextguard.service;
 import io.contextguard.client.AIProvider;
 import io.contextguard.dto.*;
 import io.contextguard.dto.PRIdentifier;
+import io.contextguard.engine.DifficultyScoringEngine;
 import io.contextguard.exception.PRNotFoundException;
 import io.contextguard.model.PRAnalysisResult;
 import org.springframework.stereotype.Service;
@@ -19,19 +20,23 @@ public class PRAnalysisOrchestrator {
     private final DiffMetadataAnalyzer diffAnalyzer;
     private final RiskScoringEngine riskEngine;
     private final AIGenerationService aiService;
+    private final DifficultyScoringEngine difficultyEngine;
+    private final BlastRadiusAnalyzer blastRadiusAnalyzer;
 
     public PRAnalysisOrchestrator(
             CacheService cacheService,
             GitHubIngestionService githubService,
             DiffMetadataAnalyzer diffAnalyzer,
             RiskScoringEngine riskEngine,
-            AIGenerationService aiService) {
+            AIGenerationService aiService, DifficultyScoringEngine difficultyEngine, BlastRadiusAnalyzer blastRadiusAnalyzer) {
 
         this.cacheService = cacheService;
         this.githubService = githubService;
         this.diffAnalyzer = diffAnalyzer;
         this.riskEngine = riskEngine;
         this.aiService = aiService;
+        this.difficultyEngine = difficultyEngine;
+        this.blastRadiusAnalyzer = blastRadiusAnalyzer;
     }
 
     @Transactional
@@ -73,6 +78,11 @@ public class PRAnalysisOrchestrator {
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
 
+        DifficultyAssessment difficulty = difficultyEngine.assessDifficulty(metadata, metrics);
+
+        BlastRadiusAssessment blastRadius = blastRadiusAnalyzer.analyze(metrics);
+
+
         AIGeneratedNarrative narrative = aiService.generateSummary(
                 metadata, metrics, risk, provider);
 
@@ -83,6 +93,8 @@ public class PRAnalysisOrchestrator {
                        .metrics(metrics)
                        .risk(risk)
                        .narrative(narrative)
+                       .difficulty(difficulty)
+                       .blastRadius(blastRadius)
                        .analyzedAt(Instant.now())
                        .build();
     }

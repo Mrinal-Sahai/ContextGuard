@@ -1,7 +1,6 @@
 package io.contextguard.dto;
 
 
-import io.contextguard.service.RiskLevel;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

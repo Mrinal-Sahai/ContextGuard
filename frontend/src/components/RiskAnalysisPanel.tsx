@@ -1,13 +1,15 @@
 // src/components/RiskAnalysisPanel.tsx
 
 import React from 'react';
-import { type RiskAssessment, type DiffMetrics } from '../types';
+import { type RiskAssessment, type DiffMetrics, type DifficultyAssessment } from '../types';
 import RiskBreakdownChart from './RiskBreakdownChart';
+import DifficultyIndicator from './DifficultyIndicator';
 import './RiskAnalysisPanel.css';
 
 interface RiskAnalysisPanelProps {
   risk: RiskAssessment;
   metrics: DiffMetrics;
+  difficulty: DifficultyAssessment;
 }
 
 /**
@@ -23,7 +25,7 @@ interface RiskAnalysisPanelProps {
  * - Critical files are prominently displayed (alert box)
  * - Numbers are rounded for readability
  */
-const RiskAnalysisPanel: React.FC<RiskAnalysisPanelProps> = ({ risk, metrics }) => {
+const RiskAnalysisPanel: React.FC<RiskAnalysisPanelProps> = ({ risk, metrics , difficulty}) => {
   return (
     <section className="risk-analysis-panel">
       <h2 className="section-title">Risk Breakdown</h2>

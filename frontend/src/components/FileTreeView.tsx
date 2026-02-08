@@ -1,146 +1,207 @@
-// src/components/FileTreeView.tsx
-
-import React, { useState } from 'react';
-import {type JSX } from 'react';
-import { type FileChangeSummary } from '../types';
-import './FileTreeView.css';
-
-interface FileTreeViewProps {
-  files: FileChangeSummary[];
-  criticalFiles: string[];
-}
+import React, { useMemo, useState, useEffect, type JSX } from 'react';
 
 /**
- * Hierarchical file tree with risk color-coding.
- * 
- * WHY THIS EXISTS:
- * - Mimics IDE file explorer (familiar to developers)
- * - Color-coding draws attention to high-risk files
- * - Expandable folders reduce visual clutter
- * 
- * RISK COLOR LOGIC:
- * - Red: File is in criticalFiles list OR complexityDelta > 10
- * - Yellow: complexityDelta 5-10
- * - Green: complexityDelta < 5
+ * CompactRiskTree.tsx
+ *
+ * PURPOSE
+ * A clean, compact, no-nonsense file tree for dashboards.
+ * - Normal hierarchical tree (folders + files)
+ * - High-risk files prioritized visually and in ordering
+ * - Aggregated risk counters at TOP + per folder
+ * - Designed for very small dashboard panels
+ *
+ * UX PRINCIPLES
+ * - Zero visual noise
+ * - No gradients, no gimmicks
+ * - Everything important visible without expanding too much
  */
-const FileTreeView: React.FC<FileTreeViewProps> = ({ files, criticalFiles }) => {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['src']));
 
-  // Build file tree structure
-  const tree = buildFileTree(files);
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
-  const toggleFolder = (path: string) => {
-    setExpanded(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(path)) {
-        newSet.delete(path);
+export interface FileChangeSummary {
+  filename: string;
+  linesAdded: number;
+  linesDeleted: number;
+  riskLevel: RiskLevel;
+}
+
+interface Props {
+  files: FileChangeSummary[];
+  criticalFiles?: string[];
+  maxHeight?: number | string;
+  onOpen?: (file: FileChangeSummary) => void;
+}
+
+/* ---------------- styles (intentionally minimal) ---------------- */
+const injectStyles = () => {
+  const id = 'compact-risk-tree-styles';
+  if (document.getElementById(id)) return;
+
+  const css = `
+  .crt { font-family: Inter, system-ui, sans-serif; font-size:12px; color:#0f172a; }
+  .crt .container { border:1px solid #e5e7eb; border-radius:6px; background:#fff; }
+  .crt .summary { display:flex; gap:8px; padding:6px 8px; border-bottom:1px solid #e5e7eb; background:#fafafa; }
+  .crt .pill { padding:2px 6px; border-radius:999px; font-weight:600; }
+  .crt .pill.high { background:#fee2e2; color:#991b1b; }
+  .crt .pill.medium { background:#fef3c7; color:#92400e; }
+  .crt .pill.low { background:#dcfce7; color:#065f46; }
+
+  .crt .tree { overflow:auto; }
+
+  .crt .row { display:flex; align-items:center; gap:6px; padding:4px 8px; white-space:nowrap; }
+  .crt .row.folder { font-weight:600; cursor:pointer; }
+  .crt .row.file { font-weight:400; }
+
+  .crt .chev { width:12px; text-align:center; color:#64748b; }
+  .crt .chev.open { transform:rotate(90deg); }
+
+  .crt .name { overflow:hidden; text-overflow:ellipsis; }
+  .crt .meta { margin-left:auto; display:flex; gap:6px; align-items:center; }
+
+  .crt .badge { font-size:10px; font-weight:700; padding:2px 5px; border-radius:999px; }
+  .crt .badge.HIGH { background:#fee2e2; color:#991b1b; }
+  .crt .badge.MEDIUM { background:#fef3c7; color:#92400e; }
+  .crt .badge.LOW { background:#dcfce7; color:#065f46; }
+
+  .crt .counts { font-size:10px; color:#6b7280; }
+  `;
+
+  const style = document.createElement('style');
+  style.id = id;
+  style.innerHTML = css;
+  document.head.appendChild(style);
+};
+
+/* ---------------- tree model ---------------- */
+interface FolderNode {
+  type: 'folder';
+  name: string;
+  path: string;
+  children: TreeNode[];
+  high: number;
+  medium: number;
+  low: number;
+}
+
+interface FileNode {
+  type: 'file';
+  name: string;
+  path: string;
+  file: FileChangeSummary;
+}
+
+type TreeNode = FolderNode | FileNode;
+
+const riskWeight = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+
+const buildTree = (files: FileChangeSummary[], critical: Set<string>): FolderNode => {
+  const root: FolderNode = { type:'folder', name:'<root>', path:'', children:[], high:0, medium:0, low:0 };
+
+  const bump = (n: FolderNode, r: RiskLevel) => {
+    if (r === 'HIGH') n.high++; else if (r === 'MEDIUM') n.medium++; else n.low++;
+  };
+
+  for (const f of files) {
+    const risk: RiskLevel = critical.has(f.filename) ? 'HIGH' : f.riskLevel;
+    const parts = f.filename.split('/');
+    let cur = root;
+    bump(cur, risk);
+
+    parts.forEach((p, i) => {
+      const isFile = i === parts.length - 1;
+      if (isFile) {
+        cur.children.push({ type:'file', name:p, path:f.filename, file:{ ...f, riskLevel:risk } });
       } else {
-        newSet.add(path);
+        let child = cur.children.find(c => c.type==='folder' && c.name===p) as FolderNode | undefined;
+        if (!child) {
+          child = { type:'folder', name:p, path: parts.slice(0,i+1).join('/'), children:[], high:0, medium:0, low:0 };
+          cur.children.push(child);
+        }
+        bump(child, risk);
+        cur = child;
       }
-      return newSet;
     });
+  }
+
+  const sort = (n: FolderNode) => {
+    n.children.sort((a,b) => {
+      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+      if (a.type === 'folder' && b.type === 'folder') {
+        if (a.high !== b.high) return b.high - a.high;
+        return a.name.localeCompare(b.name);
+      }
+      if (a.type === 'file' && b.type === 'file') {
+        const ra = riskWeight[a.file.riskLevel];
+        const rb = riskWeight[b.file.riskLevel];
+        if (ra !== rb) return ra - rb;
+        return a.name.localeCompare(b.name);
+      }
+      return 0;
+    });
+    n.children.forEach(c => c.type === 'folder' && sort(c));
   };
 
-  const getRiskLevel = (file: FileChangeSummary): 'critical' | 'medium' | 'low' => {
-    if (criticalFiles.includes(file.filename) || file.complexityDelta > 10) {
-      return 'critical';
-    }
-    if (file.complexityDelta >= 5) {
-      return 'medium';
-    }
-    return 'low';
-  };
+  sort(root);
+  return root;
+};
 
-  const renderTree = (node: TreeNode, depth: number = 0): JSX.Element => {
-    if (node.type === 'file') {
-      const riskLevel = getRiskLevel(node.file!);
+/* ---------------- component ---------------- */
+const CompactRiskTree: React.FC<Props> = ({ files, criticalFiles = [], maxHeight = 360, onOpen }) => {
+  useEffect(injectStyles, []);
+
+  const critical = useMemo(() => new Set(criticalFiles), [criticalFiles]);
+  const tree = useMemo(() => buildTree(files, critical), [files, critical]);
+
+  const [open, setOpen] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    tree.children.forEach(c => c.type==='folder' && c.high>0 && s.add(c.path));
+    return s;
+  });
+
+  const toggle = (p: string) => setOpen(o => {
+    const n = new Set(o);
+    n.has(p) ? n.delete(p) : n.add(p);
+    return n;
+  });
+
+  const renderNode = (n: TreeNode, depth = 0): JSX.Element => {
+    if (n.type === 'folder') {
+      const expanded = open.has(n.path);
       return (
-        <div
-          key={node.path}
-          className={`file-item ${riskLevel}`}
-          style={{ paddingLeft: `${depth * 20}px` }}
-        >
-          <span className="file-icon">{getFileIcon(riskLevel)}</span>
-          <span className="file-name">{node.name}</span>
-          <span className="file-stats">
-            +{node.file!.linesAdded} -{node.file!.linesDeleted}
-          </span>
+        <div key={n.path}>
+          <div className="row folder" style={{ paddingLeft: depth * 10 }} onClick={() => toggle(n.path)}>
+            <span className={`chev ${expanded ? 'open' : ''}`}>▶</span>
+            <span className="name">{n.name}</span>
+            <span className="counts">H:{n.high} M:{n.medium} L:{n.low}</span>
+          </div>
+          {expanded && n.children.map(c => renderNode(c, depth + 1))}
         </div>
       );
     }
 
-    const isExpanded = expanded.has(node.path);
-
     return (
-      <div key={node.path}>
-        <div
-          className="folder-item"
-          style={{ paddingLeft: `${depth * 20}px` }}
-          onClick={() => toggleFolder(node.path)}
-        >
-          <span className="folder-icon">{isExpanded ? '📂' : '📁'}</span>
-          <span className="folder-name">{node.name}</span>
-        </div>
-        {isExpanded && node.children?.map(child => renderTree(child, depth + 1))}
+      <div key={n.path} className="row file" style={{ paddingLeft: depth * 10 + 12 }} onDoubleClick={() => onOpen?.(n.file)}>
+        <span className={`badge ${n.file.riskLevel}`}>{n.file.riskLevel}</span>
+        <span className="name">{n.name}</span>
+        <span className="meta">+{n.file.linesAdded} -{n.file.linesDeleted}</span>
       </div>
     );
   };
 
   return (
-    <div className="file-tree-view">
-      {renderTree(tree)}
+    <div className="crt" style={{ maxHeight }}>
+      <div className="container">
+        <div className="summary">
+          <span className="pill high">High {tree.high}</span>
+          <span className="pill medium">Medium {tree.medium}</span>
+          <span className="pill low">Low {tree.low}</span>
+        </div>
+        <div className="tree">
+          {tree.children.map(c => renderNode(c, 0))}
+        </div>
+      </div>
     </div>
   );
 };
 
-// Helper: Build tree structure from flat file list
-interface TreeNode {
-  name: string;
-  path: string;
-  type: 'file' | 'folder';
-  children?: TreeNode[];
-  file?: FileChangeSummary;
-}
-
-const buildFileTree = (files: FileChangeSummary[]): TreeNode => {
-  const root: TreeNode = { name: 'root', path: '', type: 'folder', children: [] };
-
-  files.forEach(file => {
-    const parts = file.filename.split('/');
-    let current = root;
-
-    parts.forEach((part, index) => {
-      const isFile = index === parts.length - 1;
-      const path = parts.slice(0, index + 1).join('/');
-
-      let child = current.children?.find(c => c.name === part);
-
-      if (!child) {
-        child = {
-          name: part,
-          path,
-          type: isFile ? 'file' : 'folder',
-          children: isFile ? undefined : [],
-          file: isFile ? file : undefined,
-        };
-        current.children!.push(child);
-      }
-
-      if (!isFile) {
-        current = child;
-      }
-    });
-  });
-
-  return root;
-};
-
-const getFileIcon = (risk: 'critical' | 'medium' | 'low'): string => {
-  switch (risk) {
-    case 'critical': return '🔴';
-    case 'medium': return '🟡';
-    case 'low': return '🟢';
-  }
-};
-
-export default FileTreeView;
+export default CompactRiskTree;

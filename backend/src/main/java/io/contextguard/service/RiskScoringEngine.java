@@ -1,9 +1,6 @@
 package io.contextguard.service;
 
-import io.contextguard.dto.DiffMetrics;
-import io.contextguard.dto.PRMetadata;
-import io.contextguard.dto.RiskAssessment;
-import io.contextguard.dto.RiskBreakdown;
+import io.contextguard.dto.*;
 import org.springframework.stereotype.Service;
 
 /**
