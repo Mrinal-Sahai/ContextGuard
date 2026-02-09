@@ -109,6 +109,86 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!-- Tree-sitter core -->
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter</artifactId>
+			<version>0.20.8</version>
+		</dependency>
+
+		<!-- Tree-sitter language parsers -->
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter-java</artifactId>
+			<version>0.20.2</version>
+		</dependency>
+
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter-javascript</artifactId>
+			<version>0.20.1</version>
+		</dependency>
+
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter-python</artifactId>
+			<version>0.20.4</version>
+		</dependency>
+
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter-go</artifactId>
+			<version>0.20.0</version>
+		</dependency>
+
+		<!-- Alternative: Use tree-sitter-cli wrapper -->
+		<dependency>
+			<groupId>org.graalvm.sdk</groupId>
+			<artifactId>graal-sdk</artifactId>
+			<version>23.0.1</version>
+		</dependency>
+
+		<!-- JavaParser for Java (kept for comparison/validation) -->
+		<dependency>
+			<groupId>com.github.javaparser</groupId>
+			<artifactId>javaparser-symbol-solver-core</artifactId>
+			<version>3.25.5</version>
+		</dependency>
+
+		<!-- ANTLR for additional language support -->
+		<dependency>
+			<groupId>org.antlr</groupId>
+			<artifactId>antlr4-runtime</artifactId>
+			<version>4.13.1</version>
+		</dependency>
+
+		<!-- Babel parser via GraalVM polyglot -->
+
+		<!-- JavaScript language -->
+		<dependency>
+			<groupId>org.graalvm.js</groupId>
+			<artifactId>js</artifactId>
+			<version>23.0.1</version>
+		</dependency>
+
+
+		<!-- Python parser via Jython -->
+		<dependency>
+			<groupId>org.python</groupId>
+			<artifactId>jython-standalone</artifactId>
+			<version>2.7.3</version>
+		</dependency>
+		<!-- Source: https://mvnrepository.com/artifact/io.github.bonede/tree-sitter -->
+		<dependency>
+			<groupId>io.github.bonede</groupId>
+			<artifactId>tree-sitter</artifactId>
+			<version>0.22.6</version>
+			<scope>runtime</scope>
+		</dependency>
+
+
+
 	</dependencies>
 
 	<build>

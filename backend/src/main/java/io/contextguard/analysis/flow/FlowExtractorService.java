@@ -1,8 +1,10 @@
+
 package io.contextguard.analysis.flow;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import io.contextguard.dto.PRMetadata;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -23,6 +25,8 @@ import java.util.stream.Collectors;
  */
 @Service
 public class FlowExtractorService {
+
+    private static final Logger logger = LoggerFactory.getLogger(FlowExtractorService.class);
 
     private final GitRepositoryService gitService;
     private final ASTParserService astParser;
@@ -46,36 +50,55 @@ public class FlowExtractorService {
         try {
             // Step 1: Clone repository
             String repoUrl = extractRepoUrl(prMetadata.getPrUrl());
+            logger.info("Cloning repository: {}", repoUrl);
             repoPath = gitService.cloneRepository(repoUrl, githubToken);
 
             // Step 2: Parse base branch
+            logger.info("Parsing base branch: {}", prMetadata.getBaseBranch());
             gitService.checkout(repoPath, prMetadata.getBaseBranch());
-            Map<String, FlowNode> baseGraph = astParser.parseDirectory(repoPath);
+            ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectory(repoPath);
 
             // Step 3: Parse head branch
+            logger.info("Parsing head branch: {}", prMetadata.getHeadBranch());
             gitService.checkout(repoPath, prMetadata.getHeadBranch());
-            Map<String, FlowNode> headGraph = astParser.parseDirectory(repoPath);
+            ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectory(repoPath);
 
             // Step 4: Compute differential
+            logger.info("Computing differential: base={} nodes, head={} nodes",
+                    baseGraph.nodes.size(), headGraph.nodes.size());
             CallGraphDiff diff = computeDifferential(baseGraph, headGraph);
 
             diff.setGraphType("METHOD_LEVEL");
             diff.setVerificationStatus("FULL_AST_ANALYSIS");
-            diff.setVerificationNotes("Full AST parsing with accurate method-level call graph extraction");
+            diff.setVerificationNotes(String.format(
+                    "Full AST parsing completed. Analyzed %d files across %d languages: %s",
+                    baseGraph.fileCountByLanguage.values().stream().mapToInt(Integer::intValue).sum() +
+                            headGraph.fileCountByLanguage.values().stream().mapToInt(Integer::intValue).sum(),
+                    headGraph.languages.size(),
+                    String.join(", ", headGraph.languages)
+            ));
+
+            // Set detected languages
+            diff.setLanguagesDetected(new ArrayList<>(headGraph.languages));
+
+            logger.info("Differential computed: {} added, {} removed, {} modified nodes",
+                    diff.getNodesAdded().size(),
+                    diff.getNodesRemoved().size(),
+                    diff.getNodesModified().size());
 
             return diff;
 
         } catch (GitAPIException | IOException e) {
-
-            // Fallback to heuristic if clone fails
+            logger.error("Repository analysis failed", e);
             return createFallbackDiff("Repository clone failed: " + e.getMessage());
 
         } finally {
             if (repoPath != null) {
                 try {
                     gitService.cleanup(repoPath);
+                    logger.info("Repository cleanup completed");
                 } catch (IOException e) {
-                    System.err.println("Failed to cleanup: " + e.getMessage());
+                    logger.warn("Failed to cleanup repository: {}", e.getMessage());
                 }
             }
         }
@@ -85,28 +108,31 @@ public class FlowExtractorService {
      * Compute differential between base and head graphs.
      *
      * ALGORITHM:
-     * - Nodes in head but not base → ADDED
-     * - Nodes in base but not head → REMOVED
-     * - Nodes in both with different body hash → MODIFIED
-     * - Nodes in both with same body hash → UNCHANGED
+     * Nodes:
+     * - In head but not base → ADDED
+     * - In base but not head → REMOVED
+     * - In both with different properties → MODIFIED
+     * - In both unchanged → UNCHANGED
      *
      * Edges:
-     * - Build edge sets from both graphs
-     * - Compare: edges in head but not base → ADDED
-     * - Edges in base but not head → REMOVED
-     * - Edges in both → UNCHANGED
+     * - Build edge signature sets from both graphs
+     * - Compare signatures to determine ADDED/REMOVED/UNCHANGED
      */
-    private CallGraphDiff computeDifferential(Map<String, FlowNode> baseGraph,
-                                              Map<String, FlowNode> headGraph) {
+    private CallGraphDiff computeDifferential(
+            ASTParserService.ParsedCallGraph baseGraph,
+            ASTParserService.ParsedCallGraph headGraph) {
 
-        Set<String> baseNodeIds = baseGraph.keySet();
-        Set<String> headNodeIds = headGraph.keySet();
+        Set<String> baseNodeIds = baseGraph.nodes.keySet();
+        Set<String> headNodeIds = headGraph.nodes.keySet();
 
-        // Compute node differences
+        // ==========================================
+        // COMPUTE NODE DIFFERENCES
+        // ==========================================
+
         List<FlowNode> nodesAdded = headNodeIds.stream()
                                             .filter(id -> !baseNodeIds.contains(id))
                                             .map(id -> {
-                                                FlowNode node = headGraph.get(id);
+                                                FlowNode node = headGraph.nodes.get(id);
                                                 node.setStatus(FlowNode.NodeStatus.ADDED);
                                                 return node;
                                             })
@@ -115,7 +141,7 @@ public class FlowExtractorService {
         List<FlowNode> nodesRemoved = baseNodeIds.stream()
                                               .filter(id -> !headNodeIds.contains(id))
                                               .map(id -> {
-                                                  FlowNode node = baseGraph.get(id);
+                                                  FlowNode node = baseGraph.nodes.get(id);
                                                   node.setStatus(FlowNode.NodeStatus.REMOVED);
                                                   return node;
                                               })
@@ -126,8 +152,8 @@ public class FlowExtractorService {
 
         for (String id : headNodeIds) {
             if (baseNodeIds.contains(id)) {
-                FlowNode baseNode = baseGraph.get(id);
-                FlowNode headNode = headGraph.get(id);
+                FlowNode baseNode = baseGraph.nodes.get(id);
+                FlowNode headNode = headGraph.nodes.get(id);
 
                 if (isNodeModified(baseNode, headNode)) {
                     headNode.setStatus(FlowNode.NodeStatus.MODIFIED);
@@ -139,14 +165,51 @@ public class FlowExtractorService {
             }
         }
 
-        // Compute edge differences (simplified - would need actual edge extraction)
-        List<FlowEdge> edgesAdded = new ArrayList<>();
-        List<FlowEdge> edgesRemoved = new ArrayList<>();
-        List<FlowEdge> edgesUnchanged = new ArrayList<>();
+        // ==========================================
+        // COMPUTE EDGE DIFFERENCES
+        // ==========================================
 
-        // Compute metrics
+        // Create edge signature maps for comparison
+        Map<String, FlowEdge> baseEdgeMap = createEdgeSignatureMap(baseGraph.edges);
+        Map<String, FlowEdge> headEdgeMap = createEdgeSignatureMap(headGraph.edges);
+
+        Set<String> baseEdgeSigs = baseEdgeMap.keySet();
+        Set<String> headEdgeSigs = headEdgeMap.keySet();
+
+        List<FlowEdge> edgesAdded = headEdgeSigs.stream()
+                                            .filter(sig -> !baseEdgeSigs.contains(sig))
+                                            .map(sig -> {
+                                                FlowEdge edge = headEdgeMap.get(sig);
+                                                edge.setStatus(FlowEdge.EdgeStatus.ADDED);
+                                                return edge;
+                                            })
+                                            .collect(Collectors.toList());
+
+        List<FlowEdge> edgesRemoved = baseEdgeSigs.stream()
+                                              .filter(sig -> !headEdgeSigs.contains(sig))
+                                              .map(sig -> {
+                                                  FlowEdge edge = baseEdgeMap.get(sig);
+                                                  edge.setStatus(FlowEdge.EdgeStatus.REMOVED);
+                                                  return edge;
+                                              })
+                                              .collect(Collectors.toList());
+
+        List<FlowEdge> edgesUnchanged = headEdgeSigs.stream()
+                                                .filter(baseEdgeSigs::contains)
+                                                .map(sig -> {
+                                                    FlowEdge edge = headEdgeMap.get(sig);
+                                                    edge.setStatus(FlowEdge.EdgeStatus.UNCHANGED);
+                                                    return edge;
+                                                })
+                                                .collect(Collectors.toList());
+
+        // ==========================================
+        // COMPUTE METRICS
+        // ==========================================
+
         CallGraphDiff.GraphMetrics metrics = computeGraphMetrics(
-                nodesAdded, nodesRemoved, nodesModified, nodesUnchanged);
+                nodesAdded, nodesRemoved, nodesModified, nodesUnchanged,
+                edgesAdded, edgesRemoved, edgesUnchanged);
 
         return CallGraphDiff.builder()
                        .nodesAdded(nodesAdded)
@@ -157,19 +220,61 @@ public class FlowExtractorService {
                        .edgesRemoved(edgesRemoved)
                        .edgesUnchanged(edgesUnchanged)
                        .metrics(metrics)
-                       .languagesDetected(Arrays.asList("Java"))
+                       .languagesDetected(new ArrayList<>(headGraph.languages))
                        .build();
+    }
+
+    /**
+     * Create edge signature map for comparison.
+     *
+     * Edge signature = "from -> to"
+     * This allows us to compare edges across base and head graphs.
+     */
+    private Map<String, FlowEdge> createEdgeSignatureMap(List<FlowEdge> edges) {
+        Map<String, FlowEdge> map = new HashMap<>();
+
+        for (FlowEdge edge : edges) {
+            String signature = edge.getFrom() + " -> " + edge.getTo();
+            map.put(signature, edge);
+        }
+
+        return map;
     }
 
     /**
      * Determine if node was modified.
      *
-     * Compare: line count, complexity, annotations
+     * A node is considered modified if:
+     * - Cyclomatic complexity changed
+     * - Line count changed significantly (>10%)
+     * - Annotations changed
      */
     private boolean isNodeModified(FlowNode base, FlowNode head) {
-        return base.getCyclomaticComplexity() != head.getCyclomaticComplexity() ||
-                       (head.getEndLine() - head.getStartLine()) != (base.getEndLine() - base.getStartLine()) ||
-                       !Objects.equals(base.getAnnotations(), head.getAnnotations());
+
+        // Complexity changed
+        if (base.getCyclomaticComplexity() != head.getCyclomaticComplexity()) {
+            return true;
+        }
+
+        // Line count changed significantly
+        int baseLoc = base.getEndLine() - base.getStartLine();
+        int headLoc = head.getEndLine() - head.getStartLine();
+        double changePercent = Math.abs(headLoc - baseLoc) / (double) Math.max(1, baseLoc);
+        if (changePercent > 0.1) { // >10% change
+            return true;
+        }
+
+        // Annotations changed
+        if (!Objects.equals(base.getAnnotations(), head.getAnnotations())) {
+            return true;
+        }
+
+        // Return type changed
+        if (!Objects.equals(base.getReturnType(), head.getReturnType())) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -177,18 +282,23 @@ public class FlowExtractorService {
      */
     private CallGraphDiff.GraphMetrics computeGraphMetrics(
             List<FlowNode> added, List<FlowNode> removed,
-            List<FlowNode> modified, List<FlowNode> unchanged) {
+            List<FlowNode> modified, List<FlowNode> unchanged,
+            List<FlowEdge> edgesAdded, List<FlowEdge> edgesRemoved,
+            List<FlowEdge> edgesUnchanged) {
 
+        // Combine all current nodes
         List<FlowNode> allNodes = new ArrayList<>();
         allNodes.addAll(added);
         allNodes.addAll(modified);
         allNodes.addAll(unchanged);
 
+        // Average complexity
         double avgComplexity = allNodes.stream()
                                        .mapToInt(FlowNode::getCyclomaticComplexity)
                                        .average()
                                        .orElse(0.0);
 
+        // Find hotspots (modified nodes with highest centrality)
         List<String> hotspots = allNodes.stream()
                                         .filter(n -> n.getStatus() == FlowNode.NodeStatus.MODIFIED)
                                         .sorted((a, b) -> Double.compare(b.getCentrality(), a.getCentrality()))
@@ -196,12 +306,98 @@ public class FlowExtractorService {
                                         .map(FlowNode::getId)
                                         .collect(Collectors.toList());
 
+        // Compute max call depth (simplified - just find longest path)
+        int maxDepth = computeMaxCallDepth(allNodes, edgesUnchanged);
+
+        // Call distribution (methods with most calls)
+        Map<String, Integer> callDistribution = new HashMap<>();
+        for (FlowNode node : allNodes) {
+            callDistribution.put(node.getId(), node.getInDegree());
+        }
+
         return CallGraphDiff.GraphMetrics.builder()
                        .totalNodes(allNodes.size())
-                       .totalEdges(0) // Would compute from actual edges
+                       .totalEdges(edgesAdded.size() + edgesRemoved.size() + edgesUnchanged.size())
+                       .maxDepth(maxDepth)
                        .avgComplexity(avgComplexity)
                        .hotspots(hotspots)
+                       .callDistribution(callDistribution)
                        .build();
+    }
+
+    /**
+     * Compute maximum call depth (longest path in call graph).
+     *
+     * Uses BFS to find longest path from entry points.
+     */
+    private int computeMaxCallDepth(List<FlowNode> nodes, List<FlowEdge> edges) {
+
+        // Build adjacency list
+        Map<String, List<String>> graph = new HashMap<>();
+        for (FlowEdge edge : edges) {
+            graph.computeIfAbsent(edge.getFrom(), k -> new ArrayList<>()).add(edge.getTo());
+        }
+
+        // Find entry points (nodes with no incoming edges)
+        Set<String> hasIncoming = edges.stream()
+                                          .map(FlowEdge::getTo)
+                                          .collect(Collectors.toSet());
+
+        List<String> entryPoints = nodes.stream()
+                                           .map(FlowNode::getId)
+                                           .filter(id -> !hasIncoming.contains(id))
+                                           .collect(Collectors.toList());
+
+        // BFS from each entry point
+        int maxDepth = 0;
+        for (String entry : entryPoints) {
+            int depth = bfsMaxDepth(entry, graph);
+            maxDepth = Math.max(maxDepth, depth);
+        }
+
+        return maxDepth;
+    }
+
+    /**
+     * BFS to find max depth from a starting node.
+     */
+    private int bfsMaxDepth(String start, Map<String, List<String>> graph) {
+
+        Queue<NodeDepth> queue = new LinkedList<>();
+        Set<String> visited = new HashSet<>();
+
+        queue.offer(new NodeDepth(start, 0));
+        visited.add(start);
+
+        int maxDepth = 0;
+
+        while (!queue.isEmpty()) {
+            NodeDepth current = queue.poll();
+            maxDepth = Math.max(maxDepth, current.depth);
+
+            List<String> neighbors = graph.getOrDefault(current.nodeId, Collections.emptyList());
+            for (String neighbor : neighbors) {
+                if (!visited.contains(neighbor)) {
+                    visited.add(neighbor);
+                    queue.offer(new NodeDepth(neighbor, current.depth + 1));
+                }
+            }
+        }
+
+        return maxDepth;
+    }
+
+    /**
+     * Helper class for BFS traversal.
+     */
+    private static class NodeDepth {
+        String nodeId;
+        int depth;
+
+        NodeDepth(String nodeId, int depth) {
+            this.nodeId = nodeId;
+            this.depth = depth;
+        }
     }
 
     /**
@@ -210,14 +406,23 @@ public class FlowExtractorService {
      * Example: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
      */
     private String extractRepoUrl(String prUrl) {
-        String[] parts = prUrl.split("/");
-        return String.format("https://github.com/%s/%s.git", parts[3], parts[4]);
+        try {
+            String[] parts = prUrl.split("/");
+            if (parts.length >= 5) {
+                return String.format("https://github.com/%s/%s.git", parts[3], parts[4]);
+            }
+            throw new IllegalArgumentException("Invalid PR URL format");
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to extract repository URL from: " + prUrl, e);
+        }
     }
 
     /**
      * Create fallback diff when full analysis fails.
      */
     private CallGraphDiff createFallbackDiff(String reason) {
+        logger.warn("Creating fallback diff: {}", reason);
+
         return CallGraphDiff.builder()
                        .graphType("MODULE_LEVEL")
                        .verificationStatus("FALLBACK_HEURISTIC")
@@ -229,6 +434,15 @@ public class FlowExtractorService {
                        .edgesAdded(Collections.emptyList())
                        .edgesRemoved(Collections.emptyList())
                        .edgesUnchanged(Collections.emptyList())
+                       .metrics(CallGraphDiff.GraphMetrics.builder()
+                                        .totalNodes(0)
+                                        .totalEdges(0)
+                                        .maxDepth(0)
+                                        .avgComplexity(0.0)
+                                        .hotspots(Collections.emptyList())
+                                        .callDistribution(Collections.emptyMap())
+                                        .build())
+                       .languagesDetected(Collections.emptyList())
                        .build();
     }
 }
