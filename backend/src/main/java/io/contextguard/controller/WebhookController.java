@@ -3,7 +3,7 @@ package io.contextguard.controller;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import io.contextguard.dto.webhook.*;
 import io.contextguard.model.Review;
-import io.contextguard.service.WebhookService;
+import io.contextguard.service.old.WebhookService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;

@@ -133,11 +133,6 @@ const BlastRadiusPanel: React.FC<BlastRadiusPanelProps> = ({ blastRadius }) => {
         </div>
       )}
 
-      {/* Assessment Summary */}
-      <div className="assessment-summary">
-        <div className="summary-icon">💬</div>
-        <p className="summary-text">{blastRadius.assessment}</p>
-      </div>
 
       {/* Coordination Indicator (if system-wide) */}
       {blastRadius.scope === 'SYSTEM_WIDE' && (

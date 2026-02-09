@@ -7,11 +7,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.introspect.VisibilityChecker;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.contextguard.analysis.flow.CallGraphDiff;
+import io.contextguard.converter.GraphMetricsJsonConverter;
 import io.contextguard.dto.PRIntelligenceResponse;
 import jakarta.persistence.*;
 import lombok.Data;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.Type;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -55,8 +61,10 @@ public class PRAnalysisResult {
     @Column(columnDefinition = "TEXT")
     private String diagramVerificationNotes;
 
-    @Column(columnDefinition = "JSONB")
-    private String diagramMetrics;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    private CallGraphDiff.GraphMetrics diagramMetrics;
 
     public void setIntelligence(PRIntelligenceResponse intelligence) {
         // Serialize to JSON using Jackson

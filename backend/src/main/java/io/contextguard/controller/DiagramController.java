@@ -3,6 +3,7 @@ package io.contextguard.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.contextguard.analysis.flow.AsyncDiagramService;
 import io.contextguard.analysis.flow.CallGraphDiff;
+import io.contextguard.dto.FileChangeSummary;
 import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
@@ -10,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -46,9 +48,8 @@ public class DiagramController {
 
         try {
             PRMetadata prMetadata = extractMetadata(analysis);
-
             // Start async generation
-            asyncDiagramService.generateDiagramAsync(analysisId, prMetadata, githubToken);
+//            asyncDiagramService.generateDiagramAsync(analysisId, prMetadata, githubToken, pr);
 
             Map<String, String> response = new HashMap<>();
             response.put("analysisId", analysisId.toString());
@@ -83,14 +84,7 @@ public class DiagramController {
 
             // Include metrics if available
             if (analysis.getDiagramMetrics() != null) {
-                try {
-                    CallGraphDiff.GraphMetrics metrics = objectMapper.readValue(
-                            analysis.getDiagramMetrics(),
-                            CallGraphDiff.GraphMetrics.class);
-                    response.put("metrics", metrics);
-                } catch (Exception e) {
-                    // Ignore
-                }
+                response.put("metrics", analysis.getDiagramMetrics());
             }
         } else if (analysis.getDiagramVerificationNotes() != null &&
                            analysis.getDiagramVerificationNotes().contains("failed")) {

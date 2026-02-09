@@ -32,6 +32,7 @@ const DiagramPanel: React.FC<DiagramPanelProps> = ({ analysisId }) => {
   const [pollCount, setPollCount] = useState(0);
   const diagramRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const API_BASE_URL =import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api/v1';
 
   // Initialize Mermaid with enhanced config
   useEffect(() => {
@@ -57,7 +58,7 @@ const DiagramPanel: React.FC<DiagramPanelProps> = ({ analysisId }) => {
     const fetchDiagram = async () => {
       try {
         const response = await fetch(
-          `/api/v1/pr-analysis/${analysisId}/diagram`
+          `${API_BASE_URL}/api/v1/pr-analysis/${analysisId}/diagram`
         );
         
         if (!response.ok) {

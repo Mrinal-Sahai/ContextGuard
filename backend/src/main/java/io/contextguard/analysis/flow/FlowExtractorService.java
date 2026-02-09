@@ -1,14 +1,18 @@
 
 package io.contextguard.analysis.flow;
 
+import io.contextguard.dto.PRIdentifier;
+import io.contextguard.dto.PRIntelligenceResponse;
 import io.contextguard.dto.PRMetadata;
-import org.eclipse.jgit.api.errors.GitAPIException;
+import io.contextguard.model.PRAnalysisResult;
+import io.contextguard.repository.PRAnalysisRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -30,10 +34,12 @@ public class FlowExtractorService {
 
     private final GitRepositoryService gitService;
     private final ASTParserService astParser;
+    private final PRAnalysisRepository repo ;
 
-    public FlowExtractorService(GitRepositoryService gitService, ASTParserService astParser) {
+    public FlowExtractorService(GitRepositoryService gitService, ASTParserService astParser, PRAnalysisRepository repo) {
         this.gitService = gitService;
         this.astParser = astParser;
+        this.repo = repo;
     }
 
     /**
@@ -43,27 +49,25 @@ public class FlowExtractorService {
      * @param githubToken GitHub personal access token (can be null for public repos)
      * @return CallGraphDiff with method-level accuracy
      */
-    public CallGraphDiff generateDiagram(PRMetadata prMetadata, String githubToken) {
+    public CallGraphDiff
+    generateDiagram(PRIntelligenceResponse intelligence, PRMetadata prMetadata, String githubToken, PRIdentifier prId, List<String> files) {
 
-        Path repoPath = null;
-
-        try {
-            // Step 1: Clone repository
-            String repoUrl = extractRepoUrl(prMetadata.getPrUrl());
-            logger.info("Cloning repository: {}", repoUrl);
-            repoPath = gitService.cloneRepository(repoUrl, githubToken);
-
-            // Step 2: Parse base branch
+            // Step 1: Parse base branch
             logger.info("Parsing base branch: {}", prMetadata.getBaseBranch());
-            gitService.checkout(repoPath, prMetadata.getBaseBranch());
-            ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectory(repoPath);
+            ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectoryFromGithub(prId.getOwner(), prId.getRepo(),prMetadata.getBaseBranch(),files);
 
-            // Step 3: Parse head branch
+            // Step 2: Parse head branch
             logger.info("Parsing head branch: {}", prMetadata.getHeadBranch());
-            gitService.checkout(repoPath, prMetadata.getHeadBranch());
-            ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectory(repoPath);
+            ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectoryFromGithub(prId.getOwner(), prId.getRepo(),prMetadata.getHeadBranch(),files);
+             intelligence.getMetrics().setComplexityDelta(calculateComplexity(baseGraph, headGraph));
 
-            // Step 4: Compute differential
+        PRAnalysisResult result = repo.findByOwnerAndRepoAndPrNumber(prId.getOwner(), prId.getRepo(), prId.getPrNumber()).orElseThrow();
+        result.setIntelligence(intelligence);
+        result.setAnalyzedAt(Instant.now());
+        repo.save(result);
+
+
+        // Step 3: Compute differential
             logger.info("Computing differential: base={} nodes, head={} nodes",
                     baseGraph.nodes.size(), headGraph.nodes.size());
             CallGraphDiff diff = computeDifferential(baseGraph, headGraph);
@@ -88,20 +92,6 @@ public class FlowExtractorService {
 
             return diff;
 
-        } catch (GitAPIException | IOException e) {
-            logger.error("Repository analysis failed", e);
-            return createFallbackDiff("Repository clone failed: " + e.getMessage());
-
-        } finally {
-            if (repoPath != null) {
-                try {
-                    gitService.cleanup(repoPath);
-                    logger.info("Repository cleanup completed");
-                } catch (IOException e) {
-                    logger.warn("Failed to cleanup repository: {}", e.getMessage());
-                }
-            }
-        }
     }
 
     /**
@@ -405,7 +395,7 @@ public class FlowExtractorService {
      *
      * Example: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
      */
-    private String extractRepoUrl(String prUrl) {
+    public String extractRepoUrl(String prUrl) {
         try {
             String[] parts = prUrl.split("/");
             if (parts.length >= 5) {
@@ -445,4 +435,44 @@ public class FlowExtractorService {
                        .languagesDetected(Collections.emptyList())
                        .build();
     }
+
+    private int calculateComplexity(ASTParserService.ParsedCallGraph baseGraph, ASTParserService.ParsedCallGraph  headGraph) {
+        Map<String, FlowNode> baseNodes = baseGraph.nodes;
+        Map<String, FlowNode> headNodes = headGraph.nodes;
+
+        Set<String> addedIds = new HashSet<>(headNodes.keySet());
+        addedIds.removeAll(baseNodes.keySet());
+        Set<String> removedIds = new HashSet<>(baseNodes.keySet());
+        removedIds.removeAll(headNodes.keySet());
+        Set<String> commonIds = new HashSet<>(baseNodes.keySet());
+        commonIds.retainAll(headNodes.keySet());
+
+        int complexityDelta = 0;
+
+// 1. Added nodes → full complexity
+        for (String id : addedIds) {
+            complexityDelta += headNodes.get(id).getCyclomaticComplexity();
+        }
+
+// 2. Removed nodes → subtract complexity
+        for (String id : removedIds) {
+            complexityDelta -= baseNodes.get(id).getCyclomaticComplexity();
+        }
+
+// 3. Modified nodes → delta only
+        for (String id : commonIds) {
+            FlowNode base = baseNodes.get(id);
+            FlowNode head = headNodes.get(id);
+
+            int delta = head.getCyclomaticComplexity()
+                                - base.getCyclomaticComplexity();
+
+            // Only count if actually changed
+            if (delta != 0) {
+                complexityDelta += delta;
+            }
+        }
+        return complexityDelta;
+    }
+
 }

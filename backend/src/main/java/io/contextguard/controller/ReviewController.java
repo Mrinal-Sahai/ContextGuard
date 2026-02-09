@@ -5,7 +5,7 @@ import io.contextguard.model.Review;
 import io.contextguard.model.Snapshot;
 import io.contextguard.repository.ReviewRepository;
 import io.contextguard.repository.SnapshotRepository;
-import io.contextguard.service.SnapshotService;
+import io.contextguard.service.old.SnapshotService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;

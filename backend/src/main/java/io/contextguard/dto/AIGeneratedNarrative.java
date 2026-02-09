@@ -15,6 +15,7 @@ public class AIGeneratedNarrative {
     private String overview;          // One-sentence summary
     private String keyChanges;        // Bullet points
     private String potentialConcerns;// Bullet points
+    private String checklist;
     private Instant generatedAt;
     private String beforeBehavior;
     private String afterBehavior;

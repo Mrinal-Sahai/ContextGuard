@@ -51,6 +51,7 @@ public class AIGenerationService {
                            .overview(extractSection(sanitized, "OVERVIEW"))
                            .keyChanges(extractSection(sanitized, "KEY_CHANGES"))
                            .potentialConcerns(extractSection(sanitized, "CONCERNS"))
+                           .checklist(extractSection(sanitized, "CHECKLIST"))
                            .generatedAt(java.time.Instant.now())
                            .build();
 
@@ -73,12 +74,6 @@ public class AIGenerationService {
             DiffMetrics metrics,
             RiskAssessment risk) {
 
-        String fileSummaries = formatFileSummaries(
-                metrics.getFileChanges().stream()
-                        .filter(f -> f.getBeforeSnippet() != null || f.getAfterSnippet() != null)
-                        .toList()
-        );
-
         return String.format(
                 promptTemplate,
                 metadata.getTitle(),
@@ -90,8 +85,7 @@ public class AIGenerationService {
                 metrics.getLinesDeleted(),
                 formatFileTypes(metrics.getFileTypeDistribution()),
                 risk.getLevel(),
-                formatCriticalFiles(metrics.getCriticalFiles()),
-                fileSummaries
+                formatCriticalFiles(metrics.getCriticalFiles())
         );
     }
 
@@ -154,14 +148,6 @@ File types involved: %s
 Overall risk level: %s
 Critical files detected: %s
 
-━━━━━━━━━━━━━━━━━━━━━━
-FILE-LEVEL CHANGE DETAILS
-━━━━━━━━━━━━━━━━━━━━━━
-
-Below are summaries of the most relevant file changes.
-Some files include small **before/after code snippets** (truncated and contextual).
-
-%s
 
 ━━━━━━━━━━━━━━━━━━━━━━
 INSTRUCTIONS
@@ -170,8 +156,7 @@ INSTRUCTIONS
 Generate a clear, high-signal PR summary that helps a reviewer understand:
 - WHAT changed
 - WHY it changed
-- HOW behavior differs before vs after (when snippets are available)
-
+- HOW it changed
 ━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT (STRICT)
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -181,15 +166,6 @@ OVERVIEW:
 - Ground your summary in the PR description and affected areas.
 - Mention key modules/files when relevant.
 
-BEFORE_BEHAVIOR:
-- Describe system behavior before this PR.
-- Use before-snippets if available.
-- If behavior cannot be determined, write: "Not determinable from provided context."
-
-AFTER_BEHAVIOR:
-- Describe system behavior after this PR.
-- Use after-snippets if available.
-- If behavior cannot be determined, write: "Not determinable from provided context."
 
 KEY_CHANGES:
 - Bullet list of concrete changes.

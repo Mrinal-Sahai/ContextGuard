@@ -39,17 +39,20 @@ public class DiffMetadataAnalyzer {
     private final CriticalPathDetector criticalPathDetector;
     private final CodeSnippetExtractor snippetExtractor;
     private final GitHubApiClient gitHubApiClient;
+    private final MethodComplexityAnalyzer methodComplexityAnalyzer;
+
 
     public DiffMetadataAnalyzer(
             DiffParser diffParser,
             ComplexityEstimator complexityEstimator,
-            CriticalPathDetector criticalPathDetector, CodeSnippetExtractor snippetExtractor, GitHubApiClient gitHubApiClient) {
+            CriticalPathDetector criticalPathDetector, CodeSnippetExtractor snippetExtractor, GitHubApiClient gitHubApiClient, MethodComplexityAnalyzer methodComplexityAnalyzer) {
 
         this.diffParser = diffParser;
         this.complexityEstimator = complexityEstimator;
         this.criticalPathDetector = criticalPathDetector;
         this.snippetExtractor = snippetExtractor;
         this.gitHubApiClient = gitHubApiClient;
+        this.methodComplexityAnalyzer = methodComplexityAnalyzer;
     }
 
     public DiffMetrics analyzeDiff(List<GitHubFile> files, PRIdentifier prId, PRMetadata metadata) {
@@ -77,59 +80,6 @@ public class DiffMetadataAnalyzer {
         int complexityDelta = fileChanges.stream()
                                       .mapToInt(FileChangeSummary::getComplexityDelta)
                                       .sum();
-
-        List<FileChangeSummary> candidates = fileChanges.stream()
-                                                     .filter(f -> needsSnippetExtraction(f, criticalFiles))
-                                                     .sorted(Comparator.comparing((FileChangeSummary f) -> f.getRiskLevel().ordinal()).reversed()
-                                                                     .thenComparing((FileChangeSummary f) -> f.getLinesAdded(), Comparator.reverseOrder()))
-                                                     .limit(MAX_SNIPPET_FILES)
-                                                     .collect(Collectors.toList());
-
-
-
-        for (FileChangeSummary candidate : candidates) {
-            try {
-                String owner = prId.getOwner();
-                String repo = prId.getRepo();
-                String baseBranch = metadata.getBaseBranch();
-                String headBranch = metadata.getHeadBranch();
-
-                // fetch entire file content (may be null when file is new/deleted)
-                String baseContent = null;
-                String headContent = null;
-
-                if (!"added".equalsIgnoreCase(candidate.getChangeType())) {
-                    baseContent = gitHubApiClient.getFileContent(owner, repo, candidate.getFilename(), baseBranch);
-                }
-                if (!"deleted".equalsIgnoreCase(candidate.getChangeType())) {
-                    headContent = gitHubApiClient.getFileContent(owner, repo, candidate.getFilename(), headBranch);
-                }
-
-                GitHubFile ghFile = findPatchForFile(files, candidate.getFilename());
-                List<DiffHunk> hunks = (ghFile != null && ghFile.getPatch() != null)
-                                ? diffParser.parseHunks(ghFile.getPatch())
-                                : List.of();
-
-                String beforeSnippet = (baseContent != null && !hunks.isEmpty())
-                                               ? snippetExtractor.extractBeforeSnippet(baseContent, hunks)
-                                               : null;
-
-                String afterSnippet = (headContent != null && !hunks.isEmpty())
-                                              ? snippetExtractor.extractAfterSnippet(headContent, hunks)
-                                              : null;
-
-                candidate.setBeforeSnippet(beforeSnippet);
-                candidate.setAfterSnippet(afterSnippet);
-
-            } catch (Exception e) {
-                // Conservative behavior: if anything fails, leave snippets null and continue
-                // In production: log at debug level with prId and filename
-            }
-        }
-
-
-
-
 
         return DiffMetrics.builder()
                        .totalFilesChanged(files.size())
@@ -219,6 +169,7 @@ public class DiffMetadataAnalyzer {
     }
 
     private boolean needsSnippetExtraction(FileChangeSummary f, List<String> criticalFiles) {
+        if (true) return true;
         if (criticalFiles.contains(f.getFilename())) return true;
         if (f.getRiskLevel() != null && f.getRiskLevel().ordinal() >= RiskLevel.MEDIUM.ordinal()) return true;
         return Math.abs(f.getComplexityDelta()) >= SNIPPET_COMPLEXITY_THRESHOLD;

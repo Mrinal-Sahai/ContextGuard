@@ -4,6 +4,7 @@ import io.contextguard.dto.PRIdentifier;
 import io.contextguard.dto.PRIntelligenceResponse;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
+import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
@@ -36,6 +37,7 @@ public class CacheService {
                        .orElseThrow(() -> new RuntimeException("Analysis not found: " + analysisId));
     }
 
+    @Transactional
     public PRAnalysisResult save(PRIdentifier prId, PRIntelligenceResponse intelligence) {
 
         PRAnalysisResult result = new PRAnalysisResult();

@@ -11,17 +11,16 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.contextguard.client.GitHubApiClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.file.Files;
+import java.io.*;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -40,6 +39,7 @@ public class ASTParserService {
     private final JavaParser javaParser;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
+    private final GitHubApiClient githubService ;
 
     private static final Map<String, String> EXTENSION_TO_LANGUAGE = Map.ofEntries(
             Map.entry(".java", "java"),
@@ -63,7 +63,8 @@ public class ASTParserService {
             Map.entry(".scala", "scala")
     );
 
-    public ASTParserService() {
+    public ASTParserService(GitHubApiClient githubService) {
+        this.githubService = githubService;
         this.javaParser = new JavaParser();
         this.objectMapper = new ObjectMapper();
         this.executorService = Executors.newFixedThreadPool(
@@ -74,7 +75,12 @@ public class ASTParserService {
     /**
      * Parse entire directory with multi-language support.
      */
-    public ParsedCallGraph parseDirectory(Path sourceRoot) throws IOException {
+    public ParsedCallGraph parseDirectoryFromGithub(
+            String owner,
+            String repo,
+            String ref,
+            List<String> filePaths
+    ) {
 
         long startTime = System.currentTimeMillis();
 
@@ -83,27 +89,39 @@ public class ASTParserService {
         Set<String> languagesDetected = ConcurrentHashMap.newKeySet();
         Map<String, Integer> fileCountByLanguage = new ConcurrentHashMap<>();
 
-        List<Path> sourceFiles = Files.walk(sourceRoot)
-                                         .filter(Files::isRegularFile)
-                                         .filter(this::isSourceFile)
-                                         .collect(Collectors.toList());
+        logger.info("Found {} source files to parse", filePaths.size());
 
-        logger.info("Found {} source files to parse", sourceFiles.size());
-
-        List<CompletableFuture<Void>> futures = sourceFiles.stream()
-                                                        .map(file -> CompletableFuture.runAsync(() -> {
+        List<CompletableFuture<Void>> futures = filePaths.stream()
+                                                        .filter(this::isSourceFile) // reuse your existing filter logic
+                                                        .map(path -> CompletableFuture.runAsync(() -> {
                                                             try {
-                                                                String language = detectLanguage(file);
-                                                                if (language != null) {
-                                                                    languagesDetected.add(language);
-                                                                    fileCountByLanguage.merge(language, 1, Integer::sum);
-                                                                    parseFile(file, sourceRoot, language, allNodes, allEdges);
+                                                                String content = githubService.getFileContent(owner, repo, path, ref);
+                                                                if (content == null || content.isBlank()) {
+                                                                    return;
                                                                 }
+
+
+                                                                String language = detectLanguageFromPath(path);
+                                                                if (language == null) {
+                                                                    return;
+                                                                }
+
+                                                                languagesDetected.add(language);
+                                                                fileCountByLanguage.merge(language, 1, Integer::sum);
+
+                                                                parseFileFromContent(
+                                                                        path,
+                                                                        content,
+                                                                        language,
+                                                                        allNodes,
+                                                                        allEdges
+                                                                );
+
                                                             } catch (Exception e) {
-                                                                logger.warn("Failed to parse {}: {}", file, e.getMessage());
+                                                                logger.warn("Failed to parse {}: {}", path, e.getMessage());
                                                             }
                                                         }, executorService))
-                                                        .collect(Collectors.toList());
+                                                        .toList();
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
@@ -111,44 +129,112 @@ public class ASTParserService {
 
         long duration = System.currentTimeMillis() - startTime;
 
-        logger.info("Parsed {} nodes, {} edges from {} files in {}ms",
-                allNodes.size(), allEdges.size(), sourceFiles.size(), duration);
+        logger.info(
+                "Parsed {} nodes, {} edges from {} files in {}ms",
+                allNodes.size(),
+                allEdges.size(),
+                filePaths.size(),
+                duration
+        );
 
         return new ParsedCallGraph(allNodes, allEdges, languagesDetected, fileCountByLanguage);
     }
 
-    private void parseFile(Path file, Path sourceRoot, String language,
-                           Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+
+    private void parseFileFromContent(
+            String filePath,
+            String content,
+            String language,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
         try {
             switch (language) {
                 case "java":
-                    parseJavaFile(file, sourceRoot, nodes, edges);
+                    parseJavaFileFromContent(filePath, content, nodes, edges);
                     break;
                 case "javascript":
                 case "typescript":
-                    parseJavaScriptFile(file, sourceRoot, nodes, edges);
+                    parseJavaScriptFileFromContent(filePath, content, nodes, edges);
                     break;
                 case "python":
-                    parsePythonFile(file, sourceRoot, nodes, edges);
+                    parsePythonFileFromContent(filePath, content, nodes, edges);
                     break;
                 case "ruby":
-                    parseRubyFile(file, sourceRoot, nodes, edges);
+                    parseRubyFileFromContent(filePath, content, nodes, edges);
                     break;
                 case "go":
-                    parseGoFile(file, sourceRoot, nodes, edges);
+                    parseGoFileFromContent(filePath, content, nodes, edges);
                     break;
                 default:
-                    parseGenericFile(file, sourceRoot, nodes, edges);
+                    parseGenericFileFromContent(filePath, content, nodes, edges);
             }
         } catch (Exception e) {
-            logger.error("Error parsing {}: {}", file, e.getMessage());
+            logger.error("Error parsing {}: {}", filePath, e.getMessage(), e);
         }
     }
+
 
     // ==========================================
     // JAVA PARSER (Using JavaParser library)
     // ==========================================
+
+    private void parseJavaFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
+
+        ParseResult<CompilationUnit> result;
+        try {
+            result = javaParser.parse(content);
+        } catch (Exception e) {
+            logger.debug("JavaParser failed for {}: {}", filePath, e.getMessage());
+            return;
+        }
+
+        if (!result.isSuccessful() || result.getResult().isEmpty()) {
+            return;
+        }
+
+        CompilationUnit cu = result.getResult().get();
+
+        String packageName = cu.getPackageDeclaration()
+                                     .map(pd -> pd.getName().asString())
+                                     .orElse("");
+
+        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
+
+            String className = packageName.isEmpty()
+                                       ? cls.getNameAsString()
+                                       : packageName + "." + cls.getNameAsString();
+
+            cls.getMethods().forEach(method -> {
+
+                String methodId = className + "." + method.getNameAsString();
+
+                FlowNode node = FlowNode.builder()
+                                        .id(methodId)
+                                        .label(method.getNameAsString())
+                                        .type(FlowNode.NodeType.METHOD)
+                                        .status(FlowNode.NodeStatus.UNCHANGED)
+                                        .filePath(filePath) // ← IMPORTANT CHANGE
+                                        .startLine(method.getBegin().map(p -> p.line).orElse(0))
+                                        .endLine(method.getEnd().map(p -> p.line).orElse(0))
+                                        .returnType(method.getType().asString())
+                                        .annotations(extractAnnotations(method))
+                                        .cyclomaticComplexity(computeComplexity(method))
+                                        .build();
+
+                nodes.put(methodId, node);
+
+                extractMethodCalls(method, methodId, className, edges);
+            });
+        });
+    }
+
 
     private void parseJavaFile(Path file, Path sourceRoot,
                                Map<String, FlowNode> nodes,
@@ -274,176 +360,138 @@ public class ASTParserService {
     // JAVASCRIPT PARSER (Using Node.js subprocess)
     // ==========================================
 
-    private void parseJavaScriptFile(Path file, Path sourceRoot,
-                                     Map<String, FlowNode> nodes,
-                                     List<FlowEdge> edges) throws Exception {
+    private void parseJavaScriptFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) throws Exception {
 
-        // Create inline Node.js parser
-        String script = """
-            const fs = require('fs');
-            const filePath = process.argv[2];
-            const code = fs.readFileSync(filePath, 'utf-8');
-            
-            const result = { functions: [], calls: [] };
-            
-            // Extract function declarations
-            const funcRegex = /function\\s+(\\w+)\\s*\\([^)]*\\)|const\\s+(\\w+)\\s*=\\s*\\([^)]*\\)\\s*=>/g;
+        String nodeScript = """
+        const fs = require('fs');
+
+        let code = '';
+        process.stdin.on('data', chunk => code += chunk);
+        process.stdin.on('end', () => {
+            const result = { functions: [] };
+
+            const funcRegex =
+              /function\\s+(\\w+)\\s*\\([^)]*\\)|const\\s+(\\w+)\\s*=\\s*\\([^)]*\\)\\s*=>/g;
+
             let match;
             while ((match = funcRegex.exec(code)) !== null) {
                 const name = match[1] || match[2];
-                const line = code.substring(0, match.index).split('\\n').length;
+                const line = code.slice(0, match.index).split('\\n').length;
                 result.functions.push({ name, line });
             }
-            
-            // Extract function calls
-            const callRegex = /(\\w+)\\s*\\(/g;
-            while ((match = callRegex.exec(code)) !== null) {
-                const name = match[1];
-                const line = code.substring(0, match.index).split('\\n').length;
-                if (!['if', 'for', 'while', 'switch'].includes(name)) {
-                    result.calls.push({ name, line });
-                }
-            }
-            
+
             console.log(JSON.stringify(result));
-            """;
+        });
+    """;
 
-        Path scriptPath = Files.createTempFile("parse-js", ".js");
-        Files.writeString(scriptPath, script);
+        JsonNode result = runProcessWithStdin(
+                List.of("node", "-e", nodeScript),
+                content
+        );
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder("node", scriptPath.toString(), file.toString());
-            Process process = pb.start();
-
-            String output = new BufferedReader(new InputStreamReader(process.getInputStream()))
-                                    .lines().collect(Collectors.joining("\n"));
-
-            process.waitFor();
-
-            if (!output.isEmpty()) {
-                JsonNode result = objectMapper.readTree(output);
-                parseJSResult(result, file, sourceRoot, nodes, edges);
-            }
-        } finally {
-            Files.deleteIfExists(scriptPath);
-        }
+        parseJSResultFromContent(result, filePath, nodes, edges);
     }
 
-    private void parseJSResult(JsonNode result, Path file, Path sourceRoot,
-                               Map<String, FlowNode> nodes, List<FlowEdge> edges) {
 
-        String filePath = sourceRoot.relativize(file).toString();
+    private void parseJSResultFromContent(
+            JsonNode result,
+            String filePath,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
         JsonNode functions = result.get("functions");
-        if (functions != null && functions.isArray()) {
-            for (JsonNode func : functions) {
-                String name = func.get("name").asText();
-                int line = func.get("line").asInt();
+        if (functions == null || !functions.isArray()) return;
 
-                String funcId = filePath + ":" + name;
+        for (JsonNode func : functions) {
+            String name = func.get("name").asText();
+            int line = func.get("line").asInt();
 
-                FlowNode node = FlowNode.builder()
-                                        .id(funcId)
-                                        .label(name)
-                                        .type(FlowNode.NodeType.FUNCTION)
-                                        .status(FlowNode.NodeStatus.UNCHANGED)
-                                        .filePath(filePath)
-                                        .startLine(line)
-                                        .cyclomaticComplexity(1)
-                                        .build();
+            String funcId = filePath + ":" + name;
 
-                nodes.put(funcId, node);
-            }
+            nodes.put(funcId, FlowNode.builder()
+                                      .id(funcId)
+                                      .label(name)
+                                      .type(FlowNode.NodeType.FUNCTION)
+                                      .status(FlowNode.NodeStatus.UNCHANGED)
+                                      .filePath(filePath)
+                                      .startLine(line)
+                                      .cyclomaticComplexity(1)
+                                      .build());
         }
     }
+
 
     // ==========================================
     // PYTHON PARSER (Using Python subprocess)
     // ==========================================
 
-    private void parsePythonFile(Path file, Path sourceRoot,
-                                 Map<String, FlowNode> nodes,
-                                 List<FlowEdge> edges) throws Exception {
+    private void parsePythonFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) throws Exception {
 
-        String script = """
-            import ast
-            import json
-            import sys
-            
-            def parse_python(filename):
-                with open(filename, 'r') as f:
-                    code = f.read()
-                
-                try:
-                    tree = ast.parse(code)
-                    result = {'functions': [], 'calls': []}
-                    
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.FunctionDef):
-                            result['functions'].append({
-                                'name': node.name,
-                                'line': node.lineno
-                            })
-                        elif isinstance(node, ast.Call):
-                            if isinstance(node.func, ast.Name):
-                                result['calls'].append({
-                                    'name': node.func.id,
-                                    'line': node.lineno
-                                })
-                    
-                    print(json.dumps(result))
-                except:
-                    print(json.dumps({'functions': [], 'calls': []}))
-            
-            parse_python(sys.argv[1])
-            """;
+        String pythonScript = """
+        import ast, json, sys
 
-        Path scriptPath = Files.createTempFile("parse-py", ".py");
-        Files.writeString(scriptPath, script);
+        code = sys.stdin.read()
+        result = {"functions": []}
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder("python3", scriptPath.toString(), file.toString());
-            Process process = pb.start();
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    result["functions"].append({
+                        "name": node.name,
+                        "line": node.lineno
+                    })
+        except Exception:
+            pass
 
-            String output = new BufferedReader(new InputStreamReader(process.getInputStream()))
-                                    .lines().collect(Collectors.joining("\n"));
+        print(json.dumps(result))
+    """;
 
-            process.waitFor();
+        JsonNode result = runProcessWithStdin(
+                List.of("python3", "-c", pythonScript),
+                content
+        );
 
-            if (!output.isEmpty()) {
-                JsonNode result = objectMapper.readTree(output);
-                parsePythonResult(result, file, sourceRoot, nodes, edges);
-            }
-        } finally {
-            Files.deleteIfExists(scriptPath);
-        }
+        parsePythonResultFromContent(result, filePath, nodes, edges);
     }
 
-    private void parsePythonResult(JsonNode result, Path file, Path sourceRoot,
-                                   Map<String, FlowNode> nodes, List<FlowEdge> edges) {
 
-        String filePath = sourceRoot.relativize(file).toString();
+    private void parsePythonResultFromContent(
+            JsonNode result,
+            String filePath,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
         JsonNode functions = result.get("functions");
-        if (functions != null && functions.isArray()) {
-            for (JsonNode func : functions) {
-                String name = func.get("name").asText();
-                int line = func.get("line").asInt();
+        if (functions == null || !functions.isArray()) return;
 
-                String funcId = filePath + ":" + name;
+        for (JsonNode func : functions) {
+            String name = func.get("name").asText();
+            int line = func.get("line").asInt();
 
-                FlowNode node = FlowNode.builder()
-                                        .id(funcId)
-                                        .label(name)
-                                        .type(FlowNode.NodeType.FUNCTION)
-                                        .status(FlowNode.NodeStatus.UNCHANGED)
-                                        .filePath(filePath)
-                                        .startLine(line)
-                                        .cyclomaticComplexity(1)
-                                        .build();
+            String funcId = filePath + ":" + name;
 
-                nodes.put(funcId, node);
-            }
+            nodes.put(funcId, FlowNode.builder()
+                                      .id(funcId)
+                                      .label(name)
+                                      .type(FlowNode.NodeType.FUNCTION)
+                                      .status(FlowNode.NodeStatus.UNCHANGED)
+                                      .filePath(filePath)
+                                      .startLine(line)
+                                      .cyclomaticComplexity(1)
+                                      .build());
         }
     }
 
@@ -451,91 +499,90 @@ public class ASTParserService {
     // RUBY PARSER (Using Ruby subprocess)
     // ==========================================
 
-    private void parseRubyFile(Path file, Path sourceRoot,
-                               Map<String, FlowNode> nodes,
-                               List<FlowEdge> edges) throws Exception {
+    private void parseRubyFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) throws Exception {
 
-        String script = """
-            require 'json'
-            
-            filename = ARGV[0]
-            code = File.read(filename)
-            
-            result = { functions: [], calls: [] }
-            
-            code.scan(/def\\s+(\\w+)/) do |match|
-                result[:functions] << { name: match[0], line: $`.count("\\n") + 1 }
-            end
-            
-            puts result.to_json
-            """;
+        String rubyScript = """
+        require 'json'
 
-        Path scriptPath = Files.createTempFile("parse-rb", ".rb");
-        Files.writeString(scriptPath, script);
+        code = STDIN.read
+        result = { functions: [] }
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder("ruby", scriptPath.toString(), file.toString());
-            Process process = pb.start();
+        code.scan(/def\\s+(\\w+)/) do |match|
+          line = code[0...Regexp.last_match.begin(0)].count("\\n") + 1
+          result[:functions] << { name: match[0], line: line }
+        end
 
-            String output = new BufferedReader(new InputStreamReader(process.getInputStream()))
-                                    .lines().collect(Collectors.joining("\n"));
+        puts result.to_json
+    """;
 
-            process.waitFor();
+        JsonNode result = runProcessWithStdin(
+                List.of("ruby", "-e", rubyScript),
+                content
+        );
 
-            if (!output.isEmpty()) {
-                JsonNode result = objectMapper.readTree(output);
-                parseRubyResult(result, file, sourceRoot, nodes, edges);
-            }
-        } finally {
-            Files.deleteIfExists(scriptPath);
-        }
+        parseRubyResultFromContent(result, filePath, nodes, edges);
     }
 
-    private void parseRubyResult(JsonNode result, Path file, Path sourceRoot,
-                                 Map<String, FlowNode> nodes, List<FlowEdge> edges) {
 
-        String filePath = sourceRoot.relativize(file).toString();
+    private void parseRubyResultFromContent(
+            JsonNode result,
+            String filePath,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
         JsonNode functions = result.get("functions");
-        if (functions != null && functions.isArray()) {
-            for (JsonNode func : functions) {
-                String name = func.get("name").asText();
-                int line = func.get("line").asInt();
+        if (functions == null || !functions.isArray()) return;
 
-                String funcId = filePath + ":" + name;
+        for (JsonNode func : functions) {
+            String name = func.get("name").asText();
+            int line = func.get("line").asInt();
 
-                FlowNode node = FlowNode.builder()
-                                        .id(funcId)
-                                        .label(name)
-                                        .type(FlowNode.NodeType.METHOD)
-                                        .status(FlowNode.NodeStatus.UNCHANGED)
-                                        .filePath(filePath)
-                                        .startLine(line)
-                                        .cyclomaticComplexity(1)
-                                        .build();
+            String funcId = filePath + ":" + name;
 
-                nodes.put(funcId, node);
-            }
+            nodes.put(funcId, FlowNode.builder()
+                                      .id(funcId)
+                                      .label(name)
+                                      .type(FlowNode.NodeType.METHOD)
+                                      .status(FlowNode.NodeStatus.UNCHANGED)
+                                      .filePath(filePath)
+                                      .startLine(line)
+                                      .cyclomaticComplexity(1)
+                                      .build());
         }
     }
+
 
     // ==========================================
     // GO PARSER (Regex-based for simplicity)
     // ==========================================
 
-    private void parseGoFile(Path file, Path sourceRoot,
-                             Map<String, FlowNode> nodes,
-                             List<FlowEdge> edges) throws IOException {
+    private void parseGoFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
-        String code = Files.readString(file);
-        String filePath = sourceRoot.relativize(file).toString();
+        // Handles:
+        // func foo(...)
+        // func (r Receiver) bar(...)
+        Pattern pattern = Pattern.compile(
+                "^\\s*func\\s+(?:\\([^)]*\\)\\s*)?(\\w+)\\s*\\(",
+                Pattern.MULTILINE
+        );
 
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("func\\s+(\\w+)\\s*\\(");
-        java.util.regex.Matcher matcher = pattern.matcher(code);
+        Matcher matcher = pattern.matcher(content);
 
         while (matcher.find()) {
             String funcName = matcher.group(1);
-            int line = code.substring(0, matcher.start()).split("\n").length;
+
+            int startLine = countLines(content, matcher.start());
 
             String funcId = filePath + ":" + funcName;
 
@@ -545,8 +592,8 @@ public class ASTParserService {
                                     .type(FlowNode.NodeType.FUNCTION)
                                     .status(FlowNode.NodeStatus.UNCHANGED)
                                     .filePath(filePath)
-                                    .startLine(line)
-                                    .cyclomaticComplexity(1)
+                                    .startLine(startLine)
+                                    .cyclomaticComplexity(1) // conservative default
                                     .build();
 
             nodes.put(funcId, node);
@@ -557,25 +604,26 @@ public class ASTParserService {
     // GENERIC PARSER (Regex fallback)
     // ==========================================
 
-    private void parseGenericFile(Path file, Path sourceRoot,
-                                  Map<String, FlowNode> nodes,
-                                  List<FlowEdge> edges) throws IOException {
+    private void parseGenericFileFromContent(
+            String filePath,
+            String content,
+            Map<String, FlowNode> nodes,
+            List<FlowEdge> edges
+    ) {
 
-        String code = Files.readString(file);
-        String filePath = sourceRoot.relativize(file).toString();
-
-        List<java.util.regex.Pattern> patterns = Arrays.asList(
-                java.util.regex.Pattern.compile("function\\s+(\\w+)"),
-                java.util.regex.Pattern.compile("def\\s+(\\w+)"),
-                java.util.regex.Pattern.compile("func\\s+(\\w+)"),
-                java.util.regex.Pattern.compile("fn\\s+(\\w+)")
+        List<Pattern> patterns = List.of(
+                Pattern.compile("^\\s*function\\s+(\\w+)", Pattern.MULTILINE), // JS
+                Pattern.compile("^\\s*def\\s+(\\w+)", Pattern.MULTILINE),       // Python/Ruby
+                Pattern.compile("^\\s*func\\s+(\\w+)", Pattern.MULTILINE),      // Go
+                Pattern.compile("^\\s*fn\\s+(\\w+)", Pattern.MULTILINE)         // Rust
         );
 
-        for (java.util.regex.Pattern pattern : patterns) {
-            java.util.regex.Matcher matcher = pattern.matcher(code);
+        for (Pattern pattern : patterns) {
+            Matcher matcher = pattern.matcher(content);
+
             while (matcher.find()) {
                 String funcName = matcher.group(1);
-                int line = code.substring(0, matcher.start()).split("\n").length;
+                int startLine = countLines(content, matcher.start());
 
                 String funcId = filePath + ":" + funcName;
 
@@ -585,7 +633,7 @@ public class ASTParserService {
                                         .type(FlowNode.NodeType.FUNCTION)
                                         .status(FlowNode.NodeStatus.UNCHANGED)
                                         .filePath(filePath)
-                                        .startLine(line)
+                                        .startLine(startLine)
                                         .cyclomaticComplexity(1)
                                         .build();
 
@@ -594,31 +642,49 @@ public class ASTParserService {
         }
     }
 
+
     // ==========================================
     // UTILITY METHODS
     // ==========================================
 
-    private String detectLanguage(Path file) {
-        String filename = file.getFileName().toString();
-        int lastDot = filename.lastIndexOf('.');
-        if (lastDot > 0) {
-            return EXTENSION_TO_LANGUAGE.get(filename.substring(lastDot));
+    private String detectLanguageFromPath(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
         }
+
+        String lower = path.toLowerCase();
+
+        if (lower.endsWith(".java")) {
+            return "java";
+        }
+        if (lower.endsWith(".js")) {
+            return "javascript";
+        }
+        if (lower.endsWith(".ts")) {
+            return "typescript";
+        }
+        if (lower.endsWith(".py")) {
+            return "python";
+        }
+        if (lower.endsWith(".rb")) {
+            return "ruby";
+        }
+        if (lower.endsWith(".go")) {
+            return "go";
+        }
+
         return null;
     }
 
-    private boolean isSourceFile(Path file) {
-        String path = file.toString();
-        String filename = file.getFileName().toString();
 
-        return !filename.startsWith(".") &&
-                       !path.contains("/node_modules/") &&
-                       !path.contains("/vendor/") &&
-                       !path.contains("/build/") &&
-                       !path.contains("/dist/") &&
-                       !path.contains("/target/") &&
-                       !path.contains("/.git/") &&
-                       detectLanguage(file) != null;
+    private int countLines(String content, int offset) {
+        int lines = 1;
+        for (int i = 0; i < offset && i < content.length(); i++) {
+            if (content.charAt(i) == '\n') {
+                lines++;
+            }
+        }
+        return lines;
     }
 
     public void shutdown() {
@@ -632,6 +698,85 @@ public class ASTParserService {
             Thread.currentThread().interrupt();
         }
     }
+
+    private JsonNode runProcessWithStdin(
+            List<String> command,
+            String stdin
+    ) throws Exception {
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        Process process = pb.start();
+
+        try (BufferedWriter writer =
+                     new BufferedWriter(new OutputStreamWriter(process.getOutputStream()))) {
+            writer.write(stdin);
+        }
+
+        String output;
+        try (BufferedReader reader =
+                     new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            output = reader.lines().collect(Collectors.joining("\n"));
+        }
+
+        int exit = process.waitFor();
+        if (exit != 0 || output.isBlank()) {
+            return objectMapper.createObjectNode();
+        }
+
+        return objectMapper.readTree(output);
+    }
+
+
+    private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
+            ".java",
+            ".js",
+            ".ts",
+            ".py",
+            ".rb",
+            ".go"
+    );
+
+    private static final List<String> IGNORED_PATH_SEGMENTS = List.of(
+            "/node_modules/",
+            "/dist/",
+            "/build/",
+            "/target/",
+            "/out/",
+            "/vendor/",
+            "/.git/",
+            "/.idea/",
+            "/.vscode/"
+    );
+
+    private boolean isSourceFile(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+
+        String normalized = path.replace('\\', '/').toLowerCase();
+
+        // Skip directories implicitly
+        if (normalized.endsWith("/")) {
+            return false;
+        }
+
+        // Skip ignored directories
+        for (String ignored : IGNORED_PATH_SEGMENTS) {
+            if (normalized.contains(ignored)) {
+                return false;
+            }
+        }
+
+        // Must match a supported extension
+        for (String ext : SUPPORTED_EXTENSIONS) {
+            if (normalized.endsWith(ext)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
     // ==========================================
     // RESULT WRAPPER

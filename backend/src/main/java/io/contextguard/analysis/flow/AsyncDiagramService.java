@@ -1,12 +1,16 @@
 package io.contextguard.analysis.flow;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.contextguard.dto.PRIdentifier;
+import io.contextguard.dto.PRIntelligenceResponse;
 import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -23,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
  * 2. Diagram generation starts in background
  * 3. Frontend polls /diagram endpoint until ready
  */
+@Slf4j
 @Service
 public class AsyncDiagramService {
 
@@ -46,7 +51,6 @@ public class AsyncDiagramService {
     /**
      * Generate diagram asynchronously.
      *
-     * @param analysisId Analysis UUID
      * @param prMetadata PR metadata with branches
      * @param githubToken Optional GitHub token
      * @return CompletableFuture that resolves when diagram is ready
@@ -54,13 +58,15 @@ public class AsyncDiagramService {
     @Async("diagramExecutor")
     public CompletableFuture<Void> generateDiagramAsync(
             UUID analysisId,
+            PRIntelligenceResponse intelligence,
             PRMetadata prMetadata,
-            String githubToken) {
+            String githubToken,
+            PRIdentifier prIdentifier, List<String> changedFiles) {
 
         return CompletableFuture.runAsync(() -> {
             try {
                 // Step 1: Extract call graph
-                CallGraphDiff diff = flowExtractor.generateDiagram(prMetadata, githubToken);
+                CallGraphDiff diff = flowExtractor.generateDiagram(intelligence,prMetadata, githubToken, prIdentifier, changedFiles);
 
                 // Step 2: Render Mermaid
                 String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
@@ -72,15 +78,13 @@ public class AsyncDiagramService {
                 analysis.setMermaidDiagram(mermaidDiagram);
                 analysis.setDiagramVerificationNotes(diff.getVerificationNotes());
 
-                // Store metrics as JSON
-                String metricsJson = objectMapper.writeValueAsString(diff.getMetrics());
-                analysis.setDiagramMetrics(metricsJson);
+                analysis.setDiagramMetrics(diff.getMetrics());
 
                 repository.save(analysis);
 
             } catch (Exception e) {
                 // Log error and mark as failed
-                System.err.println("Diagram generation failed: " + e.getMessage());
+                log.error("Diagram generation failed: " + e.getMessage());
 
                 PRAnalysisResult analysis = repository.findById(analysisId).orElse(null);
                 if (analysis != null) {

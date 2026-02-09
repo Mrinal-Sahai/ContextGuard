@@ -43,7 +43,6 @@ public class PRAnalysisOrchestrator {
         this.asyncDiagramService = asyncDiagramService;
     }
 
-    @Transactional
     public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request, String githubToken) {
 
         PRIdentifier prId = parsePRUrl(request.getPrUrl());
@@ -65,10 +64,13 @@ public class PRAnalysisOrchestrator {
         PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider());
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
+        List<String> files=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
         asyncDiagramService.generateDiagramAsync(
-                intelligence.getAnalysisId(),
+                result.getId(),
+                intelligence,
                 result.toResponse().getMetadata(),
-                githubToken
+                githubToken, prId,files
+
         );
 
 
@@ -85,8 +87,6 @@ public class PRAnalysisOrchestrator {
 
         List<GitHubFile> files = githubService.fetchDiffFiles(prId);
         DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
-        System.exit(0);
-
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
 

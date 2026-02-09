@@ -1,7 +1,6 @@
-package io.contextguard.service;
+package io.contextguard.service.old;
 
 import io.contextguard.dto.SummaryData;
-import io.contextguard.model.Review;
 import io.contextguard.model.Snapshot;
 import io.contextguard.repository.SnapshotRepository;
 import lombok.RequiredArgsConstructor;

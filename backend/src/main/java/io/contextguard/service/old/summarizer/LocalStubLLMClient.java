@@ -1,4 +1,4 @@
-package io.contextguard.service.summarizer;
+package io.contextguard.service.old.summarizer;
 
 import io.contextguard.dto.SummaryData;
 import io.contextguard.model.Snapshot;

@@ -6,14 +6,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.contextguard.exception.GitHubApiException;
 import io.contextguard.exception.PRNotFoundException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * HTTP client for GitHub REST API v3.
@@ -29,6 +34,7 @@ import java.util.List;
  * - Authenticated: 5000 requests/hour
  */
 @Component
+@Slf4j
 public class GitHubApiClient {
 
     private final RestTemplate restTemplate;
@@ -132,31 +138,56 @@ public class GitHubApiClient {
     }
 
     public String getFileContent(String owner, String repo, String path, String ref) {
+
         try {
-            String url = String.format("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
-                    owner, repo, path, ref);
+            // Encode path safely WITHOUT encoding '/'
+            String safePath = Arrays.stream(path.split("/"))
+                                      .map(segment -> URLEncoder.encode(segment, StandardCharsets.UTF_8))
+                                      .collect(Collectors.joining("/"));
+
+            String url = String.format(
+                    "https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+                    owner,
+                    repo,
+                    safePath,
+                    ref // do NOT encode SHA or branch again
+            );
 
             HttpHeaders headers = new HttpHeaders();
             if (token != null && !token.isBlank()) {
-                headers.set(HttpHeaders.AUTHORIZATION, "token " + token);
+                headers.setBearerAuth(token); // correct modern auth
             }
-            headers.set(HttpHeaders.ACCEPT, "application/vnd.github.v3.raw+json");
-            HttpEntity<Void> entity = new HttpEntity<>(headers);
 
-            ResponseEntity<java.util.Map> resp = restTemplate.exchange(url, HttpMethod.GET, entity, java.util.Map.class);
-            if (resp.getStatusCode().is2xxSuccessful() && resp.getBody() != null) {
-                Object contentObj = resp.getBody().get("content");
-                Object encoding = resp.getBody().get("encoding");
-                if (contentObj instanceof String && "base64".equals(encoding)) {
-                    String base64 = (String) contentObj;
-                    byte[] decoded = Base64.getDecoder().decode(base64.replaceAll("\\s+", ""));
-                    return new String(decoded);
-                }
+            // Request raw file content
+            headers.set(HttpHeaders.ACCEPT, "application/vnd.github.v3.raw");
+
+            ResponseEntity<String> resp = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    String.class
+            );
+
+            if (resp.getStatusCode().is2xxSuccessful()) {
+                return resp.getBody();
             }
+
+            log.debug("Non-2xx response while fetching {}: {}", path, resp.getStatusCode());
+
+        } catch (HttpClientErrorException.NotFound e) {
+            // File genuinely does not exist at this ref
+            log.debug("File not found at ref {}: {}", ref, path);
+
+        } catch (HttpClientErrorException e) {
+            // Other GitHub errors (403, 422, etc.)
+            log.warn("GitHub API error fetching {}: {} {}", path,
+                    e.getStatusCode(), e.getResponseBodyAsString());
+
         } catch (Exception e) {
-            // keep conservative: return null if anything goes wrong
-            // In real system, log at debug level
+            log.warn("Unexpected error fetching file {}: {}", path, e.getMessage(), e);
         }
+
         return null;
     }
+
 }

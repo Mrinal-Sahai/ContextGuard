@@ -28,32 +28,62 @@ public class DiffParser {
 
 
     public List<String> extractAddedLines(String patch) {
+        if (patch == null || patch.isBlank()) {
+            return List.of();
+        }
 
-        if (patch == null) return List.of();
+        patch = patch.replace("\r\n", "\n");
 
         List<String> added = new ArrayList<>();
+
         for (String line : patch.split("\n")) {
+
+            // Skip diff metadata
+            if (line.startsWith("+++")
+                        || line.startsWith("@@")
+                        || line.startsWith("\\")
+                        || line.startsWith("diff --git")) {
+                continue;
+            }
+
             Matcher matcher = ADDED_LINE.matcher(line);
-            if (matcher.matches() && !line.startsWith("+++")) {
+            if (matcher.find() && matcher.groupCount() >= 1) {
                 added.add(matcher.group(1));
             }
         }
+
         return added;
     }
 
     public List<String> extractDeletedLines(String patch) {
 
-        if (patch == null) return List.of();
+        if (patch == null || patch.isBlank()) {
+            return List.of();
+        }
+
+        patch = patch.replace("\r\n", "\n");
 
         List<String> deleted = new ArrayList<>();
+
         for (String line : patch.split("\n")) {
+
+            // Skip diff metadata
+            if (line.startsWith("---")
+                        || line.startsWith("@@")
+                        || line.startsWith("\\")
+                        || line.startsWith("diff --git")) {
+                continue;
+            }
+
             Matcher matcher = DELETED_LINE.matcher(line);
-            if (matcher.matches() && !line.startsWith("---")) {
+            if (matcher.find() && matcher.groupCount() >= 1) {
                 deleted.add(matcher.group(1));
             }
         }
+
         return deleted;
     }
+
     /**
      * Parse the unified diff (patch) into a list of DiffHunk objects.
      */

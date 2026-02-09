@@ -1,8 +1,10 @@
-package io.contextguard.service;
+package io.contextguard.service.old;
 
 import io.contextguard.dto.SummaryData;
 import io.contextguard.model.Snapshot;
-import io.contextguard.service.summarizer.*;
+import io.contextguard.service.old.summarizer.HeuristicSummarizer;
+import io.contextguard.service.old.summarizer.LocalStubLLMClient;
+import io.contextguard.service.old.summarizer.OpenAIClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
