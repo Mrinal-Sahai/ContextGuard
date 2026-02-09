@@ -42,6 +42,7 @@ public class GeminiApiClient implements AIClient {
         this.maxTokens = maxTokens;
     }
 
+    @Override
     public String generateSummary(String prompt) {
         try {
             String url = BASE_URL + "/" + model + ":generateContent";
