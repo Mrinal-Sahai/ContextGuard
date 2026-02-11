@@ -12,14 +12,21 @@ import java.time.Instant;
 @AllArgsConstructor
 @NoArgsConstructor
 public class AIGeneratedNarrative {
-    private String overview;          // One-sentence summary
-    private String keyChanges;        // Bullet points
-    private String potentialConcerns;// Bullet points
-    private String checklist;
-    private Instant generatedAt;
-    private String beforeBehavior;
-    private String afterBehavior;
+    private String overview;
 
+    private String structuralImpact;
+
+    private String behavioralChanges;
+
+    private String riskInterpretation;
+
+    private String reviewFocus;
+
+    private String checklist;
+
+    private String confidence; // HIGH / MEDIUM / LOW + explanation
+
+    private java.time.Instant generatedAt;
     // Metadata for transparency
     private String disclaimer = "This summary is AI-generated for comprehension assistance only.";
 }

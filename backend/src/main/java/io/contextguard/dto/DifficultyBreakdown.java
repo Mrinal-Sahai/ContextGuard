@@ -14,4 +14,6 @@ public class DifficultyBreakdown {
     private double spreadContribution;      // Number of files
     private double cognitiveContribution;   // Complexity delta
     private double contextContribution;     // File type diversity
+    private double concentrationContribution; // High/CRITICAL files
+    private double criticalImpactContribution; // Critical files
 }

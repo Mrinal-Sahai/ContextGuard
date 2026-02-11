@@ -18,7 +18,7 @@ public class DiffMetrics {
     private int linesDeleted;
     private int netLinesChanged;
     private Map<String, Integer> fileTypeDistribution; // e.g., {java: 8, xml: 4}
-    private int complexityDelta;
+    private int complexityDelta; //ispr dhyan do //update it in ast parsing.
     private List<String> criticalFiles;
     private List<FileChangeSummary> fileChanges;
 }

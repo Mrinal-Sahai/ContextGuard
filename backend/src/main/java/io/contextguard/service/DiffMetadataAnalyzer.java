@@ -1,16 +1,14 @@
 package io.contextguard.service;
 
-import io.contextguard.client.GitHubApiClient;
 import io.contextguard.dto.*;
 import io.contextguard.engine.ComplexityEstimator;
-import io.contextguard.engine.CriticalPathDetector;
-import io.contextguard.engine.DiffHunk;
+import io.contextguard.service.criticalpath.CriticalPathDetector;
 import io.contextguard.engine.DiffParser;
 import org.springframework.stereotype.Service;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -31,28 +29,21 @@ import java.util.stream.Collectors;
 public class DiffMetadataAnalyzer {
 
 
-    private static final int MAX_SNIPPET_FILES = 5;
-    private static final int SNIPPET_COMPLEXITY_THRESHOLD = 5;
+
 
     private final DiffParser diffParser;
     private final ComplexityEstimator complexityEstimator;
     private final CriticalPathDetector criticalPathDetector;
-    private final CodeSnippetExtractor snippetExtractor;
-    private final GitHubApiClient gitHubApiClient;
-    private final MethodComplexityAnalyzer methodComplexityAnalyzer;
 
 
     public DiffMetadataAnalyzer(
             DiffParser diffParser,
             ComplexityEstimator complexityEstimator,
-            CriticalPathDetector criticalPathDetector, CodeSnippetExtractor snippetExtractor, GitHubApiClient gitHubApiClient, MethodComplexityAnalyzer methodComplexityAnalyzer) {
+            CriticalPathDetector criticalPathDetector) {
 
         this.diffParser = diffParser;
         this.complexityEstimator = complexityEstimator;
         this.criticalPathDetector = criticalPathDetector;
-        this.snippetExtractor = snippetExtractor;
-        this.gitHubApiClient = gitHubApiClient;
-        this.methodComplexityAnalyzer = methodComplexityAnalyzer;
     }
 
     public DiffMetrics analyzeDiff(List<GitHubFile> files, PRIdentifier prId, PRMetadata metadata) {
@@ -64,17 +55,25 @@ public class DiffMetadataAnalyzer {
 
 
         // 2. Detect file types
-        Map<String, Integer> fileTypeDistribution = files.stream()
-                                                            .collect(Collectors.groupingBy(
+        Map<String, Integer> fileTypeDistribution = files.stream().collect(Collectors.groupingBy(
                                                                     this::extractFileExtension,
                                                                     Collectors.summingInt(f -> 1)
                                                             ));
 
-        List<String> criticalFiles = criticalPathDetector.detect(files);
+        // 3. Detect critical files
+        List<CriticalDetectionResult> criticalResults = criticalPathDetector.detect(files, prId.getOwner(), prId.getRepo());
+        List<String> criticalFiles = criticalResults.stream()
+                                             .filter(CriticalDetectionResult::isCritical)
+                                             .map(CriticalDetectionResult::getFilename)
+                                             .toList();
+
+        Map<String, CriticalDetectionResult> criticalResultMap = criticalResults.stream().collect(Collectors.toMap(
+                                CriticalDetectionResult::getFilename,
+                                Function.identity()));
 
         // 3. Parse diffs and estimate complexity delta
         List<FileChangeSummary> fileChanges = files.stream()
-                                                      .map(file -> analyzeFile(file, criticalFiles))
+                                                      .map(file -> analyzeFile(file, criticalResultMap.get(file.getFilename()) ))
                                                       .toList();
 
         int complexityDelta = fileChanges.stream()
@@ -96,16 +95,17 @@ public class DiffMetadataAnalyzer {
     /**
      * Analyze individual file change.
      */
-    private FileChangeSummary analyzeFile(GitHubFile file, List<String> criticalFiles) {
+    private FileChangeSummary analyzeFile(GitHubFile file, CriticalDetectionResult criticalDetectionResult) {
 
         // Parse diff hunks to extract added/deleted line content
         List<String> addedLines = diffParser.extractAddedLines(file.getPatch());
         List<String> deletedLines = diffParser.extractDeletedLines(file.getPatch());
 
         // Estimate complexity change (heuristic: count control structures)
+        //it is later updated to be more accurate by AST Parsing.
         int complexityDelta = complexityEstimator.estimateDelta(addedLines, deletedLines);
-        RiskLevel riskLevel = classifyFileRisk(file, complexityDelta, criticalFiles);
-        String reason = buildRiskReason(file, complexityDelta, criticalFiles);
+
+        RiskLevel riskLevel = classifyFileRisk(file.getAdditions(), file.getDeletions(), file.getStatus(),complexityDelta, criticalDetectionResult.isCritical());
 
 
         return FileChangeSummary.builder()
@@ -115,10 +115,10 @@ public class DiffMetadataAnalyzer {
                        .linesDeleted(file.getDeletions())
                        .complexityDelta(complexityDelta)
                        .riskLevel(riskLevel)
-                       .reason(reason)
                        .methodSignatures(null)
                        .beforeSnippet(null)
                        .afterSnippet(null)
+                       .criticalDetectionResult(criticalDetectionResult)
                        .build();
     }
 
@@ -127,60 +127,31 @@ public class DiffMetadataAnalyzer {
         int lastDot = filename.lastIndexOf('.');
         return lastDot > 0 ? filename.substring(lastDot + 1) : "unknown";
     }
-    /**
-     * Classify file-level risk based on multiple factors.
-     *
-     * HIGH: Critical file OR high complexity (>10)
-     * MEDIUM: Moderate complexity (5-10)
-     * LOW: Low complexity (<5)
-     */
-    private RiskLevel classifyFileRisk(
-            GitHubFile file,
+
+    private RiskLevel classifyFileRisk(int additions, int deletions,String changeType,
             int complexityDelta,
-            List<String> criticalFiles) {
+            boolean isCritical) {
 
-        boolean isCritical = criticalFiles.contains(file.getFilename());
         int absComplexity = Math.abs(complexityDelta);
+        int complexityContribution = absComplexity >= 15 ? 4 : absComplexity >= 10 ? 3 : absComplexity >= 5 ? 2 : absComplexity > 0 ? 1 : 0;
+        int churn = additions + deletions;
+        int churnContribution = churn >= 300 ? 3 : churn >= 150 ? 2 : churn >= 50 ? 1 : 0;
+        int criticalContribution = isCritical ? 3 : 0;
+        int deletionContribution = ("removed").equalsIgnoreCase(changeType) || ("deleted").equalsIgnoreCase(changeType) ? 2 : 0;
+        int riskScore =
+                complexityContribution +
+                        churnContribution +
+                        criticalContribution +
+                        deletionContribution;
 
-        if (isCritical || absComplexity > 10) {
+        if (riskScore >= 7) {
             return RiskLevel.HIGH;
         }
 
-        if (absComplexity >= 5) {
+        if (riskScore >= 4) {
             return RiskLevel.MEDIUM;
         }
-
         return RiskLevel.LOW;
     }
-
-
-    private String buildRiskReason(GitHubFile file, int complexityDelta, List<String> criticalFiles) {
-        StringBuilder sb = new StringBuilder();
-        if (criticalFiles.contains(file.getFilename())) {
-            sb.append("File matched critical path keywords. ");
-        }
-        if (Math.abs(complexityDelta) > 0) {
-            sb.append("Complexity delta: ").append(complexityDelta).append(". ");
-        }
-        if ("deleted".equalsIgnoreCase(file.getStatus())) {
-            sb.append("File deleted. ");
-        }
-        return sb.toString().trim();
-    }
-
-    private boolean needsSnippetExtraction(FileChangeSummary f, List<String> criticalFiles) {
-        if (true) return true;
-        if (criticalFiles.contains(f.getFilename())) return true;
-        if (f.getRiskLevel() != null && f.getRiskLevel().ordinal() >= RiskLevel.MEDIUM.ordinal()) return true;
-        return Math.abs(f.getComplexityDelta()) >= SNIPPET_COMPLEXITY_THRESHOLD;
-    }
-
-    private GitHubFile findPatchForFile(List<GitHubFile> files, String filename) {
-        return files.stream()
-                       .filter(f -> f.getFilename().equals(filename))
-                       .findFirst()
-                       .orElse(null);
-    }
-
 
 }

@@ -130,23 +130,28 @@ public class MermaidRendererService {
      */
     private void renderEdges(StringBuilder sb, List<FlowEdge> edges, String label) {
 
-        for (FlowEdge edge : edges) {
-            String from = sanitizeId(edge.getFrom());
-            String to = sanitizeId(edge.getTo());
+        try {
+            for (FlowEdge edge : edges) {
+                String from = sanitizeId(edge.getFrom());
+                String to = sanitizeId(edge.getTo());
 
-            sb.append("    ").append(from);
+                sb.append("    ").append(from);
 
-            if ("ADDED".equals(label)) {
-                sb.append(" ==>|➕ ").append(edge.getEdgeType()).append("| ");
-            } else if ("MODIFIED".equals(label)) {
-                sb.append(" -.->|🔄| ");
-            } else {
-                sb.append(" --> ");
+                if ("ADDED".equals(label)) {
+                    sb.append(" ==>|➕ ").append(edge.getEdgeType()).append("| ");
+                } else if ("MODIFIED".equals(label)) {
+                    sb.append(" -.->|🔄| ");
+                } else {
+                    sb.append(" --> ");
+                }
+
+                sb.append(to).append("\n");
             }
-
-            sb.append(to).append("\n");
         }
-    }
+        catch(Exception e){
+                System.out.println("Error rendering edge: " + e.getMessage());
+            }
+        }
 
     /**
      * Add comprehensive styling.

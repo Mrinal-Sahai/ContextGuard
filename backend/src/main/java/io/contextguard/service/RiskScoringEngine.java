@@ -3,59 +3,97 @@ package io.contextguard.service;
 import io.contextguard.dto.*;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
- * Deterministic risk scoring using weighted heuristics.
+ * Production-grade hierarchical PR risk engine.
  *
- * WHY HEURISTICS, NOT ML:
- * - Explainable: Can show exact formula in viva
- * - Testable: Unit tests verify score correctness
- * - Defensible: No "black box" ML model
+ * DESIGN PRINCIPLES:
+ * - File risk is the foundational unit
+ * - PR risk is derived statistically from file distribution
+ * - No double counting of raw metrics
+ * - Fully deterministic and auditable
  *
- * Risk Formula (0.0 - 1.0):
- * Risk = (0.35 × Volume) + (0.30 × Complexity) + (0.25 × CriticalPath) + (0.10 × Churn)
+ * PR Risk Model:
  *
- * Where:
- * - Volume = normalized(netLinesChanged / 500)
- * - Complexity = normalized(complexityDelta / 50)
- * - CriticalPath = 1.0 if any critical file touched, else 0.0
- * - Churn = normalized(filesChanged / 20)
+ * PR_Risk =
+ *     0.40 × avgFileRisk +
+ *     0.25 × maxFileRisk +
+ *     0.20 × highRiskDensity +
+ *     0.15 × criticalFileDensity
+ *
+ * All components normalized to [0,1]
  */
 @Service
 public class RiskScoringEngine {
 
-    private static final double WEIGHT_VOLUME = 0.35;
-    private static final double WEIGHT_COMPLEXITY = 0.30;
-    private static final double WEIGHT_CRITICAL_PATH = 0.25;
-    private static final double WEIGHT_CHURN = 0.10;
+    private static final double WEIGHT_AVG = 0.40;
+    private static final double WEIGHT_MAX = 0.25;
+    private static final double WEIGHT_HIGH_DENSITY = 0.20;
+    private static final double WEIGHT_CRITICAL_DENSITY = 0.15;
 
     public RiskAssessment assessRisk(PRMetadata metadata, DiffMetrics metrics) {
 
-        // Normalize each factor to [0.0, 1.0]
-        double volumeScore = normalize(Math.abs(metrics.getNetLinesChanged()), 500);
-        double complexityScore = normalize(Math.abs(metrics.getComplexityDelta()), 50);
-        double criticalPathScore = metrics.getCriticalFiles().isEmpty() ? 0.0 : 1.0;
-        double churnScore = normalize(metrics.getTotalFilesChanged(), 20);
+        if (metrics.getFileChanges() == null || metrics.getFileChanges().isEmpty()) {
+            return RiskAssessment.builder()
+                           .overallScore(0.0)
+                           .level(RiskLevel.LOW)
+                           .breakdown(new RiskBreakdown())
+                           .criticalFilesDetected(metrics.getCriticalFiles())
+                           .build();
+        }
 
-        // Weighted sum
+        List<FileChangeSummary> files = metrics.getFileChanges();
+        int totalFiles = files.size();
+
+        // Convert file-level risk to numeric
+        double sumRisk = 0.0;
+        double maxRisk = 0.0;
+        int highRiskCount = 0;
+        int criticalCount = 0;
+
+        for (FileChangeSummary file : files) {
+
+            double fileRisk = mapRiskLevelToScore(file.getRiskLevel());
+            sumRisk += fileRisk;
+
+            if (fileRisk > maxRisk) {
+                maxRisk = fileRisk;
+            }
+
+            if (file.getRiskLevel() == RiskLevel.HIGH
+                        || file.getRiskLevel() == RiskLevel.CRITICAL) {
+                highRiskCount++;
+            }
+
+            if (file.getCriticalDetectionResult() != null
+                        && file.getCriticalDetectionResult().isCritical()) {
+                criticalCount++;
+            }
+        }
+
+        double avgRisk = sumRisk / totalFiles;
+        double highRiskDensity = (double) highRiskCount / totalFiles;
+        double criticalDensity = (double) criticalCount / totalFiles;
+
+        // Weighted aggregation
         double overallScore =
-                (WEIGHT_VOLUME * volumeScore) +
-                        (WEIGHT_COMPLEXITY * complexityScore) +
-                        (WEIGHT_CRITICAL_PATH * criticalPathScore) +
-                        (WEIGHT_CHURN * churnScore);
+                (WEIGHT_AVG * avgRisk) +
+                        (WEIGHT_MAX * maxRisk) +
+                        (WEIGHT_HIGH_DENSITY * highRiskDensity) +
+                        (WEIGHT_CRITICAL_DENSITY * criticalDensity);
 
-        // Categorize risk
-        RiskLevel level = categorizeRisk(overallScore);
+        RiskLevel level = categorize(overallScore);
 
-        // Build breakdown for UI transparency
         RiskBreakdown breakdown = RiskBreakdown.builder()
-                                          .volumeContribution(WEIGHT_VOLUME * volumeScore)
-                                          .complexityContribution(WEIGHT_COMPLEXITY * complexityScore)
-                                          .criticalPathContribution(WEIGHT_CRITICAL_PATH * criticalPathScore)
-                                          .churnContribution(WEIGHT_CHURN * churnScore)
+                                          .volumeContribution(WEIGHT_AVG * avgRisk)
+                                          .complexityContribution(WEIGHT_MAX * maxRisk)
+                                          .criticalPathContribution(WEIGHT_CRITICAL_DENSITY * criticalDensity)
+                                          .churnContribution(WEIGHT_HIGH_DENSITY * highRiskDensity)
                                           .build();
 
         return RiskAssessment.builder()
-                       .overallScore(overallScore)
+                       .overallScore(round(overallScore))
                        .level(level)
                        .breakdown(breakdown)
                        .criticalFilesDetected(metrics.getCriticalFiles())
@@ -63,21 +101,29 @@ public class RiskScoringEngine {
     }
 
     /**
-     * Normalize value to [0.0, 1.0] using sigmoid-like function.
-     * Caps at 1.0 for values exceeding threshold.
+     * Convert categorical file risk to numeric score.
+     * These values represent increasing regression probability.
      */
-    private double normalize(int value, int threshold) {
-        return Math.min(1.0, (double) value / threshold);
+    private double mapRiskLevelToScore(RiskLevel level) {
+        return switch (level) {
+            case LOW -> 0.25;
+            case MEDIUM -> 0.50;
+            case HIGH -> 0.75;
+            case CRITICAL -> 1.0;
+        };
     }
 
     /**
-     * Map risk score to categorical level.
+     * Categorize final PR risk.
      */
-    private RiskLevel categorizeRisk(double score) {
-        if (score < 0.3) return RiskLevel.LOW;
-        if (score < 0.6) return RiskLevel.MEDIUM;
-        if (score < 0.8) return RiskLevel.HIGH;
+    private RiskLevel categorize(double score) {
+        if (score < 0.25) return RiskLevel.LOW;
+        if (score < 0.50) return RiskLevel.MEDIUM;
+        if (score < 0.75) return RiskLevel.HIGH;
         return RiskLevel.CRITICAL;
     }
-}
 
+    private double round(double value) {
+        return Math.round(value * 1000.0) / 1000.0;
+    }
+}

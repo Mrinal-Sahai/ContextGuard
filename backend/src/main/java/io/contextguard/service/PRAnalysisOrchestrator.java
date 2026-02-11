@@ -86,7 +86,14 @@ public class PRAnalysisOrchestrator {
         PRMetadata metadata = githubService.fetchPRMetadata(prId);
 
         List<GitHubFile> files = githubService.fetchDiffFiles(prId);
+
+        /*
+        Complexity delta
+        critical file detection
+        File risk level assessment
+         */
         DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
+
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
 
@@ -95,7 +102,7 @@ public class PRAnalysisOrchestrator {
         BlastRadiusAssessment blastRadius = blastRadiusAnalyzer.analyze(metrics);
 
 
-        AIGeneratedNarrative narrative = aiService.generateSummary(
+        AIGeneratedNarrative narrative = aiService.generateSummary( files,
                 metadata, metrics, risk, provider);
 
         // FIX: Use builder pattern instead of constructor

@@ -24,5 +24,7 @@ public class FileChangeSummary {
     private String methodSignatures;
     private String beforeSnippet;
     private String afterSnippet;
+    private CriticalDetectionResult criticalDetectionResult;
     private String reason;
+
 }

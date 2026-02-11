@@ -4,10 +4,14 @@ import io.contextguard.client.AIClient;
 import io.contextguard.client.AIProvider;
 import io.contextguard.client.AIRouter;
 import io.contextguard.dto.*;
+import io.contextguard.engine.DiffParser;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Generates natural language summary using AI.
@@ -28,20 +32,22 @@ public class AIGenerationService {
 
     private final AIRouter aiRouter;
     private final String promptTemplate;
+    private final DiffParser diffParser ;
 
-    public AIGenerationService(AIRouter aiRouter) {
+    public AIGenerationService(AIRouter aiRouter, DiffParser diffParser) {
         this.aiRouter = aiRouter;
+        this.diffParser = diffParser;
         this.promptTemplate = loadPromptTemplate();
     }
 
-    public AIGeneratedNarrative generateSummary(
+    public AIGeneratedNarrative generateSummary(List<GitHubFile> files,
             PRMetadata metadata,
             DiffMetrics metrics,
             RiskAssessment risk,
             AIProvider provider) {
 
 
-        String prompt = buildPrompt(metadata, metrics, risk);
+        String prompt = buildPrompt(metadata, metrics, risk, files);
         try {
             AIClient client = aiRouter.getClient(provider);
             String aiResponse = client.generateSummary(prompt);
@@ -49,9 +55,12 @@ public class AIGenerationService {
 
             return AIGeneratedNarrative.builder()
                            .overview(extractSection(sanitized, "OVERVIEW"))
-                           .keyChanges(extractSection(sanitized, "KEY_CHANGES"))
-                           .potentialConcerns(extractSection(sanitized, "CONCERNS"))
+                           .structuralImpact(extractSection(sanitized, "STRUCTURAL_IMPACT"))
+                           .behavioralChanges(extractSection(sanitized, "BEHAVIORAL_CHANGES"))
+                           .riskInterpretation(extractSection(sanitized, "RISK_INTERPRETATION"))
+                           .reviewFocus(extractSection(sanitized, "REVIEW_FOCUS"))
                            .checklist(extractSection(sanitized, "CHECKLIST"))
+                           .confidence(extractSection(sanitized, "CONFIDENCE"))
                            .generatedAt(java.time.Instant.now())
                            .build();
 
@@ -72,7 +81,13 @@ public class AIGenerationService {
     private String buildPrompt(
             PRMetadata metadata,
             DiffMetrics metrics,
-            RiskAssessment risk) {
+            RiskAssessment risk,
+            List<GitHubFile> files
+    ) {
+
+        String fileEvidence = formatFileSummaries(
+                selectTopRelevantFiles(metrics.getFileChanges()), files
+        );
 
         return String.format(
                 promptTemplate,
@@ -85,9 +100,11 @@ public class AIGenerationService {
                 metrics.getLinesDeleted(),
                 formatFileTypes(metrics.getFileTypeDistribution()),
                 risk.getLevel(),
-                formatCriticalFiles(metrics.getCriticalFiles())
+                formatCriticalFiles(metrics.getCriticalFiles()),
+                fileEvidence
         );
     }
+
 
     private String safe(String s) {
         return s == null ? "Not provided." : s;
@@ -110,88 +127,110 @@ public class AIGenerationService {
 
     private AIGeneratedNarrative generateFallbackSummary(PRMetadata metadata, DiffMetrics metrics) {
         return AIGeneratedNarrative.builder()
-                       .overview("This PR modifies " + metrics.getTotalFilesChanged() + " files.")
-                       .keyChanges("AI summary unavailable. See metrics for details.")
-                       .potentialConcerns("Review large file changes manually.")
-                       .generatedAt(java.time.Instant.now())
-                       .build();
+                .overview("This pull request contains changes to the following files: " + metrics.getFileChanges())
+                .structuralImpact("No structural impact identified.")
+                .behavioralChanges("No behavioral changes identified.")
+                .riskInterpretation("No risk interpretation provided.")
+                .reviewFocus("No review focus provided.")
+                .checklist("No checklist provided.")
+                .confidence("No confidence level provided.")
+                .generatedAt(java.time.Instant.now())
+                .build();
     }
 
     private String loadPromptTemplate() {
         return """
-You are generating a **technical pull request summary** for a software engineer.
+You are generating a senior-level technical pull request summary.
 
-You will receive **structured data only** (no raw diffs, no full files).
-You must base your summary **strictly on the provided information**.
+Base your analysis ONLY on the structured evidence provided.
+Do NOT assume undocumented behavior.
 
-━━━━━━━━━━━━━━━━━━━━━
-PULL REQUEST CONTEXT
-━━━━━━━━━━━━━━━━━━━━━━
+PR CONTEXT
+Title:%s
+Author Description:%s
+Branch Change:%s → %s
 
-PR Title:
+
+PR METRICS
+Files Changed: %d
+Lines Added: %d
+Lines Deleted: %d
+File Types: %s
+Overall Risk Level: %s
+Critical Files: %s
+
+
+FILE-LEVEL EVIDENCE
+
 %s
 
-PR Description (written by the author):
-%s
-
-Base Branch → Head Branch:
-%s → %s
-
-━━━━━━━━━━━━━━━━━━━━━━
-CHANGE METRICS
-━━━━━━━━━━━━━━━━━━━━━━
-
-Files changed: %d
-Lines added: %d
-Lines deleted: %d
-File types involved: %s
-Overall risk level: %s
-Critical files detected: %s
+Each file block may include:
+- change type
+- risk level
+- critical detection reasons
+- method changes
+- before/after snippet 
 
 
-━━━━━━━━━━━━━━━━━━━━━━
-INSTRUCTIONS
-━━━━━━━━━━━━━━━━━━━━━━
 
-Generate a clear, high-signal PR summary that helps a reviewer understand:
-- WHAT changed
-- WHY it changed
-- HOW it changed
-━━━━━━━━━━━━━━━━━━━━━━
-OUTPUT FORMAT (STRICT)
-━━━━━━━━━━━━━━━━━━━━━━
+GENERATE  a high-signal summary explaining:
+
+1. INTENT
+   - What problem this PR addresses (based ONLY on description).
+
+2. STRUCTURAL_IMPACT
+   Files/modules changed.
+   Localized or cross-cutting.
+   Mention critical files.
+
+3. BEHAVIORAL_CHANGES
+   Infer only from snippets or method changes.
+   If unclear: "Not determinable from provided data."
+
+4. RISK_INTERPRETATION
+   Explain risk using complexity, deletions, criticality.
+
+5. REVIEW_FOCUS
+   Concrete review areas (no improvement suggestions).
+
+6. CHECKLIST
+   Operational checks inferred from evidence.
+   
+7. CONFIDENCE
+   HIGH / MEDIUM / LOW with brief reason.
+   Based only on completeness of provided data.
+
+
+OUTPUT FORMAT (strict)
 
 OVERVIEW:
-- 3–5 sentences describing the intent and scope of the PR.
-- Ground your summary in the PR description and affected areas.
-- Mention key modules/files when relevant.
+[4–6 sentences]
 
+STRUCTURAL_IMPACT:
+- ...
 
-KEY_CHANGES:
-- Bullet list of concrete changes.
-- Each bullet MUST reference a filename.
-- Focus on behavior or configuration changes, not syntax.
+BEHAVIORAL_CHANGES:
+- ...
 
-POTENTIAL_CONCERNS:
-- Bullet list of risks, edge cases, or review points.
-- Base concerns ONLY on provided risk level, complexity, or test impact.
-- Do NOT suggest fixes or improvements.
+RISK_INTERPRETATION:
+- ...
+
+REVIEW_FOCUS:
+- ...
 
 CHECKLIST:
-- Bullet list of checks that user must perform after merging.
+- ...
 
-━━━━━━━━━━━━━━━━━━━━━━
-STRICT RULES
-━━━━━━━━━━━━━━━━━━━━━━
+CONFIDENCE:
+- ...
 
-- Do NOT include code blocks or code suggestions.
-- Do NOT make recommendations or implementation advice.
-- Do NOT invent behavior or infer beyond the given context.
-- If information is missing, explicitly say it is not determinable.
-- Keep total output under 400 words.
-- Use clear, professional language suitable for a senior code review.
+RULES
+- Reference filenames when applicable.
+- No code blocks.
+- No speculation beyond evidence.
+- Keep under 500 words.
 
-Now generate the summary.
+Generate the summary.
 """;
     }
 
@@ -229,26 +268,47 @@ Now generate the summary.
         return files.isEmpty() ? "None" : String.join(", ", files);
     }
 
-    private String formatFileSummaries(List<FileChangeSummary> files) {
+    private String formatFileSummaries(List<FileChangeSummary> files, List<GitHubFile> ghFiles) {
         StringBuilder sb = new StringBuilder();
+        Map<String, GitHubFile> ghFileMap = ghFiles.stream().collect(Collectors.toMap(GitHubFile::getFilename,
+                                                            Function.identity(),
+                                                            (a, b) -> a));
 
         for (FileChangeSummary f : files) {
+            GitHubFile ghFile = ghFileMap.get(f.getFilename());
+            List<String> addedLines = summarizeLines(
+                    diffParser.extractAddedLines(ghFile.getPatch())
+            );
+
+            List<String> removedLines = summarizeLines(
+                    diffParser.extractDeletedLines(ghFile.getPatch())
+            );
+
+
             sb.append("File: ").append(f.getFilename()).append("\n");
             sb.append("Change type: ").append(f.getChangeType()).append("\n");
             sb.append("Risk level: ").append(f.getRiskLevel()).append("\n");
+            if(f.getCriticalDetectionResult() != null) {
+                sb.append("Risk Reasons: ").append(String.join(", ", f.getCriticalDetectionResult().getReasons())).append("\n");
+            }
+
 
             if (f.getReason() != null && !f.getReason().isBlank()) {
                 sb.append("Reason: ").append(f.getReason()).append("\n");
             }
 
-            if (f.getBeforeSnippet() != null) {
-                sb.append("Before snippet:\n");
-                sb.append(f.getBeforeSnippet()).append("\n");
+            if (!addedLines.isEmpty()) {
+                sb.append("ADDED LINES:\n");
+                for (String line : addedLines) {
+                    sb.append("- ").append(line).append("\n");
+                }
             }
 
-            if (f.getAfterSnippet() != null) {
-                sb.append("After snippet:\n");
-                sb.append(f.getAfterSnippet()).append("\n");
+            if (!removedLines.isEmpty()) {
+                sb.append("DELETED LINES:\n");
+                for (String line : removedLines) {
+                    sb.append("- ").append(line).append("\n");
+                }
             }
 
             sb.append("----\n");
@@ -256,5 +316,27 @@ Now generate the summary.
 
         return sb.toString();
     }
+
+    private List<FileChangeSummary> selectTopRelevantFiles(List<FileChangeSummary> files) {
+        return files.stream()
+                       .sorted(Comparator
+                                       .comparing(FileChangeSummary::getRiskLevel).reversed()
+                                       .thenComparing(f -> Math.abs(f.getComplexityDelta()), Comparator.reverseOrder()))
+                       .limit(5)
+                       .toList();
+    }
+
+    private List<String> summarizeLines(List<String> lines) {
+        return lines.stream()
+                       .map(String::trim)
+                       .filter(l -> !l.isBlank())
+                       .filter(l -> l.length() > 3)
+                       .filter(l -> !l.matches("[{}();]+"))
+                       .filter(l -> !l.startsWith("//"))
+                       .limit(8)
+                       .toList();
+    }
+
+
 
 }

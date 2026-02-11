@@ -40,8 +40,8 @@ public class GitHubIngestionService {
                        .author(prData.get("user").get("login").asText())
                        .createdAt(prData.get("created_at").asText())
                        .updatedAt(prData.get("updated_at").asText())
-                       .baseBranch(prData.get("base").get("sha").asText())
-                       .headBranch(prData.get("head").get("sha").asText())
+                       .baseBranch(prData.get("base").get("ref").asText())
+                       .headBranch(prData.get("head").get("ref").asText())
                        .prUrl(prData.get("html_url").asText())
                        .body(prData.get("body").asText())
                        .build();
