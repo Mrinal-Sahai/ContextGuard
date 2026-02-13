@@ -76,8 +76,7 @@ public class ASTParserService {
      * Parse entire directory with multi-language support.
      */
     public ParsedCallGraph parseDirectoryFromGithub(
-            String owner,
-            String repo,
+            String fullRepoName,
             String ref,
             List<String> filePaths
     ) {
@@ -95,7 +94,7 @@ public class ASTParserService {
                                                         .filter(this::isSourceFile) // reuse your existing filter logic
                                                         .map(path -> CompletableFuture.runAsync(() -> {
                                                             try {
-                                                                String content = githubService.getFileContent(owner, repo, path, ref);
+                                                                String content = githubService.getFileContent(fullRepoName, path, ref);
                                                                 if (content == null || content.isBlank()) {
                                                                     return;
                                                                 }

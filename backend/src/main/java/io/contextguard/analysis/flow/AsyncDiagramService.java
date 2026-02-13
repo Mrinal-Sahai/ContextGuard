@@ -7,12 +7,9 @@ import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Asynchronous diagram generation service.
@@ -53,17 +50,15 @@ public class AsyncDiagramService {
      *
      * @param prMetadata PR metadata with branches
      * @param githubToken Optional GitHub token
-     * @return CompletableFuture that resolves when diagram is ready
      */
-    @Async("diagramExecutor")
-    public CompletableFuture<Void> generateDiagramAsync(
+//    @Async("diagramExecutor")
+    public void generateDiagram(
             UUID analysisId,
             PRIntelligenceResponse intelligence,
             PRMetadata prMetadata,
             String githubToken,
             PRIdentifier prIdentifier, List<String> changedFiles) {
 
-        return CompletableFuture.runAsync(() -> {
             try {
                 // Step 1: Extract call graph
                 CallGraphDiff diff = flowExtractor.generateDiagram(intelligence,prMetadata, githubToken, prIdentifier, changedFiles);
@@ -92,6 +87,5 @@ public class AsyncDiagramService {
                     repository.save(analysis);
                 }
             }
-        });
     }
 }

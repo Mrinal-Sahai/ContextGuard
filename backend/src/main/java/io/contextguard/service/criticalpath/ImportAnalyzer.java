@@ -3,9 +3,11 @@ package io.contextguard.service.criticalpath;
 import io.contextguard.dto.GitHubFile;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -19,53 +21,79 @@ import java.util.regex.Pattern;
 public class ImportAnalyzer {
 
     private static final Pattern IMPORT_PATTERN = Pattern.compile(
-            "\\b(import|require|from)\\b\\s+['\\\"]?([\\w\\./-]+)['\\\"]?",
-            Pattern.CASE_INSENSITIVE);
+            "^\\+.*\\b(import|require|from)\\b.*",
+            Pattern.CASE_INSENSITIVE
+    );
 
-    /**
-     * Returns map: filename -> in-degree (how many other changed files reference it)
-     */
     public Map<String, Integer> computeImportInDegree(List<GitHubFile> files) {
+
         Map<String, Integer> inDegree = new HashMap<>();
-        Map<String, GitHubFile> byBasename = new HashMap<>();
+        Map<String, GitHubFile> byFullPath = new HashMap<>();
+        Map<String, List<GitHubFile>> byBaseName = new HashMap<>();
+
         for (GitHubFile f : files) {
-            byBasename.put(simpleName(f.getFilename()), f);
+            byFullPath.put(f.getFilename(), f);
+            byBaseName
+                    .computeIfAbsent(simpleName(f.getFilename()), k -> new ArrayList<>())
+                    .add(f);
         }
 
-        for (GitHubFile f : files) {
-            String patch = f.getPatch();
+        for (GitHubFile source : files) {
+            String patch = source.getPatch();
             if (patch == null) continue;
+
             for (String line : patch.split("\n")) {
-                var m = IMPORT_PATTERN.matcher(line);
-                while (m.find()) {
-                    String target = m.group(2);
-                    String possible = guessFilenameFromImport(target);
-                    if (possible != null && byBasename.containsKey(possible)) {
-                        String key = byBasename.get(possible).getFilename();
-                        inDegree.merge(key, 1, Integer::sum);
+
+                // Only consider added lines
+                if (!line.startsWith("+") || line.startsWith("+++"))
+                    continue;
+
+                if (!IMPORT_PATTERN.matcher(line).find())
+                    continue;
+
+                String token = extractImportTarget(line);
+                if (token == null) continue;
+
+                String normalized = normalizeImport(token);
+
+                // Try full-path match first
+                for (GitHubFile candidate : files) {
+                    if (candidate.getFilename().contains(normalized)) {
+                        inDegree.merge(candidate.getFilename(), 1, Integer::sum);
+                    }
+                }
+
+                // Fallback: basename match
+                List<GitHubFile> matches =
+                        byBaseName.get(simpleName(normalized));
+
+                if (matches != null) {
+                    for (GitHubFile match : matches) {
+                        inDegree.merge(match.getFilename(), 1, Integer::sum);
                     }
                 }
             }
         }
+
         return inDegree;
     }
 
-    private static String simpleName(String filename) {
-        int idx = filename.lastIndexOf('/');
-        String base = idx >= 0 ? filename.substring(idx + 1) : filename;
-        return base.toLowerCase();
+    private static String extractImportTarget(String line) {
+        Pattern p = Pattern.compile("['\"]([^'\"]+)['\"]");
+        Matcher m = p.matcher(line);
+        return m.find() ? m.group(1) : null;
     }
 
-    private static String guessFilenameFromImport(String importToken) {
-        // crude heuristic: take last segment and append common extensions
-        if (importToken == null) return null;
-        String[] parts = importToken.split("/");
-        String last = parts[parts.length - 1].toLowerCase();
-        // common extensions to try
-        if (last.contains(".")) return last;
-        String[] tryExt = new String[] { last + ".java", last + ".rb", last + ".js", last + ".py" };
-        for (String s : tryExt) return s; // return first; calling code checks existence
-        return last;
+    private static String normalizeImport(String token) {
+        token = token.replace("./", "")
+                        .replace("../", "");
+        return token;
+    }
+
+    private static String simpleName(String path) {
+        int idx = path.lastIndexOf('/');
+        return (idx >= 0 ? path.substring(idx + 1) : path)
+                       .toLowerCase();
     }
 }
 

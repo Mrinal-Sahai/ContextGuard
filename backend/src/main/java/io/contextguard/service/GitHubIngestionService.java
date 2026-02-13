@@ -41,7 +41,13 @@ public class GitHubIngestionService {
                        .createdAt(prData.get("created_at").asText())
                        .updatedAt(prData.get("updated_at").asText())
                        .baseBranch(prData.get("base").get("ref").asText())
+                       .baseSha(prData.get("base").get("sha").asText())
+                       .baseRepo(prData.get("base").get("repo").get("full_name").asText())
+
+                       // Head (PR branch - possibly fork)
                        .headBranch(prData.get("head").get("ref").asText())
+                       .headSha(prData.get("head").get("sha").asText())
+                       .headRepo(prData.get("head").get("repo").get("full_name").asText())
                        .prUrl(prData.get("html_url").asText())
                        .body(prData.get("body").asText())
                        .build();

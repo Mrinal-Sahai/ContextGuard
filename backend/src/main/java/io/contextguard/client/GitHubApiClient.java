@@ -137,20 +137,30 @@ public class GitHubApiClient {
         return new HttpEntity<>(headers);
     }
 
-    public String getFileContent(String owner, String repo, String path, String ref) {
+    public String getFileContent(String fullRepoName, String path, String ref) {
 
         try {
             // Encode path safely WITHOUT encoding '/'
+
+            String[] parts = fullRepoName.split("/");
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Invalid repo name: " + fullRepoName);
+            }
+
+            String owner = parts[0];
+            String repo = parts[1];
             String safePath = Arrays.stream(path.split("/"))
                                       .map(segment -> URLEncoder.encode(segment, StandardCharsets.UTF_8))
                                       .collect(Collectors.joining("/"));
+
+            String encodedRef = URLEncoder.encode(ref, StandardCharsets.UTF_8);
 
             String url = String.format(
                     "https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
                     owner,
                     repo,
                     safePath,
-                    ref // do NOT encode SHA or branch again
+                    encodedRef
             );
 
             HttpHeaders headers = new HttpHeaders();

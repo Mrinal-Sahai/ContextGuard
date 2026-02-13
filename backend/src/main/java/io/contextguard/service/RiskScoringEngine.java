@@ -6,33 +6,47 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * Production-grade hierarchical PR risk engine.
+ * PR-LEVEL RISK AGGREGATION ENGINE
  *
- * DESIGN PRINCIPLES:
- * - File risk is the foundational unit
- * - PR risk is derived statistically from file distribution
- * - No double counting of raw metrics
- * - Fully deterministic and auditable
+ * PURPOSE:
+ * Aggregates file-level categorical risks into a statistically
+ * normalized Pull Request risk score.
  *
- * PR Risk Model:
+ * PR Risk Formula:
  *
  * PR_Risk =
- *     0.40 × avgFileRisk +
- *     0.25 × maxFileRisk +
- *     0.20 × highRiskDensity +
- *     0.15 × criticalFileDensity
+ *   0.35 × averageFileRisk
+ * + 0.30 × peakFileRisk
+ * + 0.20 × highRiskFileDensity
+ * + 0.15 × criticalPathFileDensity
  *
- * All components normalized to [0,1]
+ * DEFINITIONS:
+ *
+ * 1. Average File Risk
+ *    → Mean numeric risk across all modified files
+ *    → Represents overall instability level
+ *
+ * 2. Peak File Risk
+ *    → Highest individual file risk
+ *    → Captures single-point catastrophic failure risk
+ *
+ * 3. High-Risk File Density
+ *    → Proportion of files classified HIGH or CRITICAL
+ *    → Represents concentration of serious changes
+ *
+ * 4. Critical Path File Density
+ *    → Proportion of files affecting business-critical paths
+ *    → Represents systemic business impact exposure
  */
 @Service
 public class RiskScoringEngine {
 
-    private static final double WEIGHT_AVG = 0.40;
-    private static final double WEIGHT_MAX = 0.25;
+    private static final double WEIGHT_AVG = 0.35;
+    private static final double WEIGHT_PEAK = 0.30;
     private static final double WEIGHT_HIGH_DENSITY = 0.20;
     private static final double WEIGHT_CRITICAL_DENSITY = 0.15;
 
-    public RiskAssessment assessRisk(PRMetadata metadata, DiffMetrics metrics) {
+    public RiskAssessment  assessRisk(PRMetadata metadata, DiffMetrics metrics) {
 
         if (metrics.getFileChanges() == null || metrics.getFileChanges().isEmpty()) {
             return RiskAssessment.builder()
@@ -48,17 +62,17 @@ public class RiskScoringEngine {
 
         // Convert file-level risk to numeric
         double sumRisk = 0.0;
-        double maxRisk = 0.0;
+        double peakRisk = 0.0;
         int highRiskCount = 0;
-        int criticalCount = 0;
+        int criticalPathCount = 0;
 
         for (FileChangeSummary file : files) {
 
-            double fileRisk = mapRiskLevelToScore(file.getRiskLevel());
-            sumRisk += fileRisk;
+            double numericRisk = mapRiskToNumeric(file.getRiskLevel());
+            sumRisk += numericRisk;
 
-            if (fileRisk > maxRisk) {
-                maxRisk = fileRisk;
+            if (numericRisk > peakRisk) {
+                peakRisk = numericRisk;
             }
 
             if (file.getRiskLevel() == RiskLevel.HIGH
@@ -68,28 +82,28 @@ public class RiskScoringEngine {
 
             if (file.getCriticalDetectionResult() != null
                         && file.getCriticalDetectionResult().isCritical()) {
-                criticalCount++;
+                criticalPathCount++;
             }
         }
 
-        double avgRisk = sumRisk / totalFiles;
-        double highRiskDensity = (double) highRiskCount / totalFiles;
-        double criticalDensity = (double) criticalCount / totalFiles;
 
-        // Weighted aggregation
+        double averageRisk = sumRisk / totalFiles;
+        double highRiskDensity = (double) highRiskCount / totalFiles;
+        double criticalDensity = (double) criticalPathCount / totalFiles;
+
         double overallScore =
-                (WEIGHT_AVG * avgRisk) +
-                        (WEIGHT_MAX * maxRisk) +
+                (WEIGHT_AVG * averageRisk) +
+                        (WEIGHT_PEAK * peakRisk) +
                         (WEIGHT_HIGH_DENSITY * highRiskDensity) +
                         (WEIGHT_CRITICAL_DENSITY * criticalDensity);
 
         RiskLevel level = categorize(overallScore);
 
         RiskBreakdown breakdown = RiskBreakdown.builder()
-                                          .volumeContribution(WEIGHT_AVG * avgRisk)
-                                          .complexityContribution(WEIGHT_MAX * maxRisk)
-                                          .criticalPathContribution(WEIGHT_CRITICAL_DENSITY * criticalDensity)
-                                          .churnContribution(WEIGHT_HIGH_DENSITY * highRiskDensity)
+                                          .averageRiskContribution(WEIGHT_AVG * averageRisk)
+                                          .peakRiskContribution(WEIGHT_PEAK * peakRisk)
+                                          .highRiskDensityContribution(WEIGHT_HIGH_DENSITY * highRiskDensity)
+                                          .criticalPathDensityContribution(WEIGHT_CRITICAL_DENSITY * criticalDensity)
                                           .build();
 
         return RiskAssessment.builder()
@@ -104,10 +118,10 @@ public class RiskScoringEngine {
      * Convert categorical file risk to numeric score.
      * These values represent increasing regression probability.
      */
-    private double mapRiskLevelToScore(RiskLevel level) {
+    private double mapRiskToNumeric(RiskLevel level) {
         return switch (level) {
-            case LOW -> 0.25;
-            case MEDIUM -> 0.50;
+            case LOW -> 0.1;
+            case MEDIUM -> 0.4;
             case HIGH -> 0.75;
             case CRITICAL -> 1.0;
         };

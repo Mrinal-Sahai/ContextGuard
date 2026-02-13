@@ -16,6 +16,10 @@ public class PRMetadata {
     private String updatedAt;
     private String baseBranch;
     private String headBranch;
+    private String headSha;
+    private String baseSha;
+    private String headRepo;
+    private String baseRepo;
     private String prUrl;
     private String body;
 }

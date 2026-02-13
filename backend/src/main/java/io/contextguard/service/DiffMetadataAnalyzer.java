@@ -12,18 +12,33 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Analyzes diff metadata WITHOUT interpreting code semantics.
+ * FILE-LEVEL RISK CLASSIFICATION ENGINE
  *
- * WHY NO CODE REASONING:
- * - Reduces scope (no AST parsing, no semantic analysis)
- * - Focuses on STRUCTURE, not LOGIC
- * - Defensible in viva: "We analyze change patterns, not business logic"
+ * PURPOSE:
+ * Classifies individual file changes based on structural change patterns
+ * without interpreting business logic semantics.
  *
- * Metrics computed:
- * - Lines of Code (added/deleted)
- * - File type distribution
- * - Complexity delta (heuristic-based)
- * - Critical path detection (keyword matching)
+ * RISK DIMENSIONS (File-Level):
+ *
+ * 1. Change Magnitude (Churn)
+ *    → Total lines modified (additions + deletions)
+ *    → Represents regression surface area
+ *
+ * 2. Structural Complexity Delta
+ *    → Increase in control structures (if/loops/etc.)
+ *    → Proxy for increased cognitive load and defect probability
+ *
+ * 3. Critical Path Impact
+ *    → Whether file belongs to business-critical or infra-sensitive paths
+ *    → Represents high business impact if failure occurs
+ *
+ * 4. Destructive Change Signal
+ *    → File deletion/removal
+ *    → Represents breaking-change probability
+ *
+ * Output:
+ * Each file is assigned a categorical RiskLevel:
+ * LOW / MEDIUM / HIGH / CRITICAL
  */
 @Service
 public class DiffMetadataAnalyzer {
@@ -78,7 +93,7 @@ public class DiffMetadataAnalyzer {
 
         int complexityDelta = fileChanges.stream()
                                       .mapToInt(FileChangeSummary::getComplexityDelta)
-                                      .sum();
+                                       .sum();
 
         return DiffMetrics.builder()
                        .totalFilesChanged(files.size())
@@ -128,29 +143,47 @@ public class DiffMetadataAnalyzer {
         return lastDot > 0 ? filename.substring(lastDot + 1) : "unknown";
     }
 
-    private RiskLevel classifyFileRisk(int additions, int deletions,String changeType,
-            int complexityDelta,
-            boolean isCritical) {
+    private RiskLevel classifyFileRisk(int additions,
+                                       int deletions,
+                                       String changeType,
+                                       int complexityDelta,
+                                       boolean isCriticalPath) {
 
-        int absComplexity = Math.abs(complexityDelta);
-        int complexityContribution = absComplexity >= 15 ? 4 : absComplexity >= 10 ? 3 : absComplexity >= 5 ? 2 : absComplexity > 0 ? 1 : 0;
         int churn = additions + deletions;
-        int churnContribution = churn >= 300 ? 3 : churn >= 150 ? 2 : churn >= 50 ? 1 : 0;
-        int criticalContribution = isCritical ? 3 : 0;
-        int deletionContribution = ("removed").equalsIgnoreCase(changeType) || ("deleted").equalsIgnoreCase(changeType) ? 2 : 0;
-        int riskScore =
-                complexityContribution +
-                        churnContribution +
-                        criticalContribution +
-                        deletionContribution;
+        int absComplexity = Math.abs(complexityDelta);
 
-        if (riskScore >= 7) {
-            return RiskLevel.HIGH;
-        }
+        //  Change Magnitude Contribution (Surface Area Risk)
+        int magnitudeScore =
+                churn >= 400 ? 4 :
+                        churn >= 200 ? 3 :
+                                churn >= 80  ? 2 :
+                                        churn >= 30  ? 1 : 0;
 
-        if (riskScore >= 4) {
-            return RiskLevel.MEDIUM;
-        }
+        //  Structural Complexity Contribution
+        int complexityScore =
+                absComplexity >= 20 ? 4 :
+                        absComplexity >= 12 ? 3 :
+                                absComplexity >= 6  ? 2 :
+                                        absComplexity > 0   ? 1 : 0;
+
+        //  Business Critical Impact
+        int criticalScore = isCriticalPath ? 3 : 0;
+
+        // Destructive Change Risk
+        int destructiveScore =
+                ("removed".equalsIgnoreCase(changeType)
+                         || "deleted".equalsIgnoreCase(changeType)) ? 2 : 0;
+
+        int totalScore =
+                magnitudeScore +
+                        complexityScore +
+                        criticalScore +
+                        destructiveScore;
+
+        // Thresholds calibrated to allow CRITICAL classification
+        if (totalScore >= 9) return RiskLevel.CRITICAL;
+        if (totalScore >= 6) return RiskLevel.HIGH;
+        if (totalScore >= 3) return RiskLevel.MEDIUM;
         return RiskLevel.LOW;
     }
 

@@ -10,8 +10,8 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 public class RiskBreakdown {
-    private double volumeContribution;
-    private double complexityContribution;
-    private double criticalPathContribution;
-    private double churnContribution;
+    private double averageRiskContribution;
+    private double peakRiskContribution;
+    private double criticalPathDensityContribution;
+    private double highRiskDensityContribution;
 }

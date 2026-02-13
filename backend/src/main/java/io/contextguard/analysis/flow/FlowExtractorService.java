@@ -54,11 +54,11 @@ public class FlowExtractorService {
 
             // Step 1: Parse base branch
             logger.info("Parsing base branch: {}", prMetadata.getBaseBranch());
-            ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectoryFromGithub(prId.getOwner(), prId.getRepo(),prMetadata.getBaseBranch(),files);
+            ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectoryFromGithub( prMetadata.getBaseRepo(),prMetadata.getBaseSha(),files);
 
             // Step 2: Parse head branch
             logger.info("Parsing head branch: {}", prMetadata.getHeadBranch());
-            ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectoryFromGithub(prId.getOwner(), prId.getRepo(),prMetadata.getHeadBranch(),files);
+            ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectoryFromGithub(prMetadata.getHeadRepo(),prMetadata.getHeadSha(),files);
              intelligence.getMetrics().setComplexityDelta(calculateComplexity(baseGraph, headGraph));
 
         PRAnalysisResult result = repo.findByOwnerAndRepoAndPrNumber(prId.getOwner(), prId.getRepo(), prId.getPrNumber()).orElseThrow();
@@ -114,10 +114,6 @@ public class FlowExtractorService {
 
         Set<String> baseNodeIds = baseGraph.nodes.keySet();
         Set<String> headNodeIds = headGraph.nodes.keySet();
-
-        // ==========================================
-        // COMPUTE NODE DIFFERENCES
-        // ==========================================
 
         List<FlowNode> nodesAdded = headNodeIds.stream()
                                             .filter(id -> !baseNodeIds.contains(id))

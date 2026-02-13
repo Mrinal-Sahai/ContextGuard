@@ -169,7 +169,8 @@ Each file block may include:
 - risk level
 - critical detection reasons
 - method changes
-- before/after snippet 
+- added lines
+- deleted lines
 
 
 
@@ -178,10 +179,11 @@ GENERATE  a high-signal summary explaining:
 1. INTENT
    - What problem this PR addresses (based ONLY on description).
 
-2. STRUCTURAL_IMPACT
-   Files/modules changed.
-   Localized or cross-cutting.
-   Mention critical files.
+2. STRUCTURAL_IMPACT 
+   - How this PR affects the codebase.
+   - How this PR affects the business logic.
+   - Localized or cross-cutting impact.
+   - Mention critical files.
 
 3. BEHAVIORAL_CHANGES
    Infer only from snippets or method changes.

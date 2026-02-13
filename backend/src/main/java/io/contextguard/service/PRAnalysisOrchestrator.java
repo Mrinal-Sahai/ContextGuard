@@ -65,7 +65,7 @@ public class PRAnalysisOrchestrator {
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
         List<String> files=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
-        asyncDiagramService.generateDiagramAsync(
+        asyncDiagramService.generateDiagram(
                 result.getId(),
                 intelligence,
                 result.toResponse().getMetadata(),
