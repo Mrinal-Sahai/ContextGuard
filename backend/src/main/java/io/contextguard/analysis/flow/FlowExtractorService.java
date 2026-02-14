@@ -32,12 +32,10 @@ public class FlowExtractorService {
 
     private static final Logger logger = LoggerFactory.getLogger(FlowExtractorService.class);
 
-    private final GitRepositoryService gitService;
     private final ASTParserService astParser;
     private final PRAnalysisRepository repo ;
 
-    public FlowExtractorService(GitRepositoryService gitService, ASTParserService astParser, PRAnalysisRepository repo) {
-        this.gitService = gitService;
+    public FlowExtractorService( ASTParserService astParser, PRAnalysisRepository repo) {
         this.astParser = astParser;
         this.repo = repo;
     }

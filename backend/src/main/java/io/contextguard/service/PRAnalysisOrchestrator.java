@@ -1,6 +1,6 @@
 package io.contextguard.service;
 
-import io.contextguard.analysis.flow.AsyncDiagramService;
+import io.contextguard.analysis.flow.DiagramService;
 import io.contextguard.client.AIProvider;
 import io.contextguard.dto.*;
 import io.contextguard.dto.PRIdentifier;
@@ -8,7 +8,6 @@ import io.contextguard.engine.DifficultyScoringEngine;
 import io.contextguard.exception.PRNotFoundException;
 import io.contextguard.model.PRAnalysisResult;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,14 +23,14 @@ public class PRAnalysisOrchestrator {
     private final AIGenerationService aiService;
     private final DifficultyScoringEngine difficultyEngine;
     private final BlastRadiusAnalyzer blastRadiusAnalyzer;
-    private final AsyncDiagramService asyncDiagramService;
+    private final DiagramService diagramService;
 
     public PRAnalysisOrchestrator(
             CacheService cacheService,
             GitHubIngestionService githubService,
             DiffMetadataAnalyzer diffAnalyzer,
             RiskScoringEngine riskEngine,
-            AIGenerationService aiService, DifficultyScoringEngine difficultyEngine, BlastRadiusAnalyzer blastRadiusAnalyzer, AsyncDiagramService asyncDiagramService) {
+            AIGenerationService aiService, DifficultyScoringEngine difficultyEngine, BlastRadiusAnalyzer blastRadiusAnalyzer, DiagramService asyncDiagramService) {
 
         this.cacheService = cacheService;
         this.githubService = githubService;
@@ -40,7 +39,7 @@ public class PRAnalysisOrchestrator {
         this.aiService = aiService;
         this.difficultyEngine = difficultyEngine;
         this.blastRadiusAnalyzer = blastRadiusAnalyzer;
-        this.asyncDiagramService = asyncDiagramService;
+        this.diagramService = asyncDiagramService;
     }
 
     public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request, String githubToken) {
@@ -65,7 +64,7 @@ public class PRAnalysisOrchestrator {
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
         List<String> files=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
-        asyncDiagramService.generateDiagram(
+        diagramService.generateDiagram(
                 result.getId(),
                 intelligence,
                 result.toResponse().getMetadata(),

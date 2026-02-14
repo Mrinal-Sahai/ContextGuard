@@ -32,25 +32,29 @@ public class GitHubIngestionService {
      */
     public PRMetadata fetchPRMetadata(PRIdentifier prId) {
 
-        var prData = apiClient.getPullRequest(
-                prId.getOwner(), prId.getRepo(), prId.getPrNumber());
+        try {
+            var prData = apiClient.getPullRequest(
+                    prId.getOwner(), prId.getRepo(), prId.getPrNumber());
+            return PRMetadata.builder()
+                           .title(prData.get("title").asText())
+                           .author(prData.get("user").get("login").asText())
+                           .createdAt(prData.get("created_at").asText())
+                           .updatedAt(prData.get("updated_at").asText())
+                           .baseBranch(prData.get("base").get("ref").asText())
+                           .baseSha(prData.get("base").get("sha").asText())
+                           .baseRepo(prData.get("base").get("repo").get("full_name").asText())
 
-        return PRMetadata.builder()
-                       .title(prData.get("title").asText())
-                       .author(prData.get("user").get("login").asText())
-                       .createdAt(prData.get("created_at").asText())
-                       .updatedAt(prData.get("updated_at").asText())
-                       .baseBranch(prData.get("base").get("ref").asText())
-                       .baseSha(prData.get("base").get("sha").asText())
-                       .baseRepo(prData.get("base").get("repo").get("full_name").asText())
-
-                       // Head (PR branch - possibly fork)
-                       .headBranch(prData.get("head").get("ref").asText())
-                       .headSha(prData.get("head").get("sha").asText())
-                       .headRepo(prData.get("head").get("repo").get("full_name").asText())
-                       .prUrl(prData.get("html_url").asText())
-                       .body(prData.get("body").asText())
-                       .build();
+                           // Head (PR branch - possibly fork)
+                           .headBranch(prData.get("head").get("ref").asText())
+                           .headSha(prData.get("head").get("sha").asText())
+                           .headRepo(prData.get("head").get("repo").get("full_name").asText())
+                           .prUrl(prData.get("html_url").asText())
+                           .body(prData.get("body").asText())
+                           .build();
+        }
+        catch (Exception e) {
+            throw new RuntimeException("Failed to fetch PR metadata", e);
+        }
     }
 
     /**
@@ -61,18 +65,24 @@ public class GitHubIngestionService {
      */
     public List<GitHubFile> fetchDiffFiles(PRIdentifier prId) {
 
-        // Call GitHub API: GET /repos/{owner}/{repo}/pulls/{number}/files
-        List<JsonNode> files = apiClient.getPullRequestFiles(
-                prId.getOwner(), prId.getRepo(), prId.getPrNumber());
+        try {
 
-        return files.stream()
-                       .map(file -> new GitHubFile(
-                               file.get("filename").asText(),
-                               file.get("status").asText(), // added/modified/deleted
-                               file.get("additions").asInt(),
-                               file.get("deletions").asInt(),
-                               file.get("patch").asText() // Unified diff format
-                       ))
-                       .toList();
+            // Call GitHub API: GET /repos/{owner}/{repo}/pulls/{number}/files
+            List<JsonNode> files = apiClient.getPullRequestFiles(
+                    prId.getOwner(), prId.getRepo(), prId.getPrNumber());
+
+            return files.stream()
+                           .map(file -> new GitHubFile(
+                                   file.get("filename").asText(),
+                                   file.get("status").asText(), // added/modified/deleted
+                                   file.get("additions")==null ? 0 :file.get("additions").asInt(),
+                                   file.get("deletions")==null ? 0 : file.get("deletions").asInt(),
+                                   file.get("patch")==null ? "" : file.get("patch").asText() // Unified diff format
+                           ))
+                           .toList();
+        }
+        catch (Exception e) {
+            throw new RuntimeException("Failed to fetch PR files", e);
+        }
     }
 }

@@ -335,7 +335,7 @@ Generate the summary.
                        .filter(l -> l.length() > 3)
                        .filter(l -> !l.matches("[{}();]+"))
                        .filter(l -> !l.startsWith("//"))
-                       .limit(8)
+                       .limit(50)
                        .toList();
     }
 

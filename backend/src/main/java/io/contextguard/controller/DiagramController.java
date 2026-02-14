@@ -1,8 +1,8 @@
 package io.contextguard.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.contextguard.analysis.flow.AsyncDiagramService;
 import io.contextguard.analysis.flow.CallGraphDiff;
+import io.contextguard.analysis.flow.DiagramService;
 import io.contextguard.dto.FileChangeSummary;
 import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
@@ -19,12 +19,12 @@ import java.util.UUID;
 @RequestMapping("/api/v1/pr-analysis")
 public class DiagramController {
 
-    private final AsyncDiagramService asyncDiagramService;
+    private final DiagramService asyncDiagramService;
     private final PRAnalysisRepository repository;
     private final ObjectMapper objectMapper;
 
     public DiagramController(
-            AsyncDiagramService asyncDiagramService,
+            DiagramService asyncDiagramService,
             PRAnalysisRepository repository,
             ObjectMapper objectMapper) {
 

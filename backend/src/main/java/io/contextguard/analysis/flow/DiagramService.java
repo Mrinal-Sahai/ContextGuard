@@ -26,14 +26,14 @@ import java.util.UUID;
  */
 @Slf4j
 @Service
-public class AsyncDiagramService {
+public class DiagramService {
 
     private final FlowExtractorService flowExtractor;
     private final MermaidRendererService mermaidRenderer;
     private final PRAnalysisRepository repository;
     private final ObjectMapper objectMapper;
 
-    public AsyncDiagramService(
+    public DiagramService(
             FlowExtractorService flowExtractor,
             MermaidRendererService mermaidRenderer,
             PRAnalysisRepository repository,
