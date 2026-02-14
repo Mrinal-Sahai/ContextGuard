@@ -59,11 +59,6 @@ public class FlowExtractorService {
             ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectoryFromGithub(prMetadata.getHeadRepo(),prMetadata.getHeadSha(),files);
              intelligence.getMetrics().setComplexityDelta(calculateComplexity(baseGraph, headGraph));
 
-        PRAnalysisResult result = repo.findByOwnerAndRepoAndPrNumber(prId.getOwner(), prId.getRepo(), prId.getPrNumber()).orElseThrow();
-        result.setIntelligence(intelligence);
-        result.setAnalyzedAt(Instant.now());
-        repo.save(result);
-
 
         // Step 3: Compute differential
             logger.info("Computing differential: base={} nodes, head={} nodes",

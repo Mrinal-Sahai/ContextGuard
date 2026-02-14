@@ -68,6 +68,8 @@ public class GeminiApiClient implements AIClient {
             HttpEntity<Map<String, Object>> entity =
                     new HttpEntity<>(requestBody, headers);
 
+            System.out.println("Gemini API call "+url);
+
             ResponseEntity<String> response = restTemplate.exchange(
                     url,
                     HttpMethod.POST,
@@ -88,11 +90,14 @@ public class GeminiApiClient implements AIClient {
 
         }
         catch (HttpClientErrorException.TooManyRequests e) {
+            System.out.println("Gemini quota exceeded. Falling back or retrying later. "+e);
             throw new AIServiceException(
                     "Gemini quota exceeded. Falling back or retrying later.", e
             );
         }
         catch (Exception e) {
+            System.out.println("Gemini API call failed "+e);
+
             throw new AIServiceException("Gemini API call failed", e);
         }
     }

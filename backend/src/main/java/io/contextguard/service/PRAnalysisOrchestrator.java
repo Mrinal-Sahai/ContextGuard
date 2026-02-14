@@ -60,16 +60,23 @@ public class PRAnalysisOrchestrator {
             request.setAiProvider(AIProvider.GEMINI);
         }
 
-        PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider());
+        PRMetadata metadata = githubService.fetchPRMetadata(prId);
+
+        List<GitHubFile> ghFiles = githubService.fetchDiffFiles(prId);
+
+        PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider(), metadata, ghFiles);
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
-        List<String> files=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
+        List<String> changedFileList=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
         diagramService.generateDiagram(
                 result.getId(),
                 intelligence,
-                result.toResponse().getMetadata(),
-                githubToken, prId,files
-
+                metadata,
+                githubToken,
+                prId,
+                changedFileList,
+                request.getAiProvider(),
+                ghFiles
         );
 
 
@@ -80,19 +87,10 @@ public class PRAnalysisOrchestrator {
         );
     }
 
-    private PRIntelligenceResponse executeAnalysisPipeline(PRIdentifier prId, AIProvider provider) {
+    private PRIntelligenceResponse executeAnalysisPipeline(PRIdentifier prId, AIProvider provider,PRMetadata metadata, List<GitHubFile> files) {
 
-        PRMetadata metadata = githubService.fetchPRMetadata(prId);
 
-        List<GitHubFile> files = githubService.fetchDiffFiles(prId);
-
-        /*
-        Complexity delta
-        critical file detection
-        File risk level assessment
-         */
         DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
-
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
 
@@ -100,17 +98,13 @@ public class PRAnalysisOrchestrator {
 
         BlastRadiusAssessment blastRadius = blastRadiusAnalyzer.analyze(metrics);
 
-
-        AIGeneratedNarrative narrative = aiService.generateSummary( files,
-                metadata, metrics, risk, provider);
-
         // FIX: Use builder pattern instead of constructor
         return PRIntelligenceResponse.builder()
                        .analysisId(UUID.randomUUID())
                        .metadata(metadata)
                        .metrics(metrics)
                        .risk(risk)
-                       .narrative(narrative)
+                       .narrative(null)
                        .difficulty(difficulty)
                        .blastRadius(blastRadius)
                        .analyzedAt(Instant.now())

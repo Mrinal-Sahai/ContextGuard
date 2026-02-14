@@ -46,7 +46,7 @@ public class RiskScoringEngine {
     private static final double WEIGHT_HIGH_DENSITY = 0.20;
     private static final double WEIGHT_CRITICAL_DENSITY = 0.15;
 
-    public RiskAssessment  assessRisk(PRMetadata metadata, DiffMetrics metrics) {
+    public RiskAssessment assessRisk(PRMetadata metadata, DiffMetrics metrics) {
 
         if (metrics.getFileChanges() == null || metrics.getFileChanges().isEmpty()) {
             return RiskAssessment.builder()
@@ -65,6 +65,7 @@ public class RiskScoringEngine {
         double peakRisk = 0.0;
         int highRiskCount = 0;
         int criticalPathCount = 0;
+        int publicAPICount = 0;
 
         for (FileChangeSummary file : files) {
 
@@ -84,18 +85,23 @@ public class RiskScoringEngine {
                         && file.getCriticalDetectionResult().isCritical()) {
                 criticalPathCount++;
             }
+            if (isPublicAPI(file)) {
+                publicAPICount++;
+            }
         }
 
 
         double averageRisk = sumRisk / totalFiles;
         double highRiskDensity = (double) highRiskCount / totalFiles;
         double criticalDensity = (double) criticalPathCount / totalFiles;
+        double publicAPIDensity = (double) publicAPICount / totalFiles;
 
         double overallScore =
                 (WEIGHT_AVG * averageRisk) +
                         (WEIGHT_PEAK * peakRisk) +
                         (WEIGHT_HIGH_DENSITY * highRiskDensity) +
-                        (WEIGHT_CRITICAL_DENSITY * criticalDensity);
+                        (WEIGHT_CRITICAL_DENSITY * criticalDensity) +
+                        (0.10 * publicAPIDensity);
 
         RiskLevel level = categorize(overallScore);
 
@@ -139,5 +145,14 @@ public class RiskScoringEngine {
 
     private double round(double value) {
         return Math.round(value * 1000.0) / 1000.0;
+    }
+
+    private boolean isPublicAPI(FileChangeSummary file) {
+        return file.getFilename().contains("/api/") ||
+                       file.getFilename().contains("/controller/") ||
+                       (file.getMethodChanges() != null &&
+                                file.getMethodChanges().stream().anyMatch(m ->
+                                                                                  m.getAnnotations() != null &&
+                                                                                          m.getAnnotations().contains("@RestController")));
     }
 }

@@ -1,11 +1,11 @@
 package io.contextguard.analysis.flow;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.contextguard.dto.PRIdentifier;
-import io.contextguard.dto.PRIntelligenceResponse;
-import io.contextguard.dto.PRMetadata;
+import io.contextguard.client.AIProvider;
+import io.contextguard.dto.*;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
+import io.contextguard.service.AIGenerationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import java.util.List;
@@ -31,18 +31,17 @@ public class DiagramService {
     private final FlowExtractorService flowExtractor;
     private final MermaidRendererService mermaidRenderer;
     private final PRAnalysisRepository repository;
-    private final ObjectMapper objectMapper;
+    private final AIGenerationService aiService;
 
     public DiagramService(
             FlowExtractorService flowExtractor,
             MermaidRendererService mermaidRenderer,
-            PRAnalysisRepository repository,
-            ObjectMapper objectMapper) {
+            PRAnalysisRepository repository, AIGenerationService aiService) {
 
         this.flowExtractor = flowExtractor;
         this.mermaidRenderer = mermaidRenderer;
         this.repository = repository;
-        this.objectMapper = objectMapper;
+        this.aiService = aiService;
     }
 
     /**
@@ -51,13 +50,16 @@ public class DiagramService {
      * @param prMetadata PR metadata with branches
      * @param githubToken Optional GitHub token
      */
-//    @Async("diagramExecutor")
     public void generateDiagram(
             UUID analysisId,
             PRIntelligenceResponse intelligence,
             PRMetadata prMetadata,
             String githubToken,
-            PRIdentifier prIdentifier, List<String> changedFiles) {
+            PRIdentifier prIdentifier,
+            List<String> changedFiles,
+            AIProvider provider,
+            List<GitHubFile> files
+    ) {
 
             try {
                 // Step 1: Extract call graph
@@ -70,8 +72,14 @@ public class DiagramService {
                 PRAnalysisResult analysis = repository.findById(analysisId)
                                                     .orElseThrow(() -> new RuntimeException("Analysis not found"));
 
+                AIGeneratedNarrative narrative = aiService.generateSummary(files, prMetadata, intelligence.getMetrics(), intelligence.getRisk(), intelligence.getDifficulty(),intelligence.getBlastRadius(),diff,provider);
+
+                intelligence.setNarrative(narrative);
+
                 analysis.setMermaidDiagram(mermaidDiagram);
                 analysis.setDiagramVerificationNotes(diff.getVerificationNotes());
+                analysis.setIntelligence(intelligence);
+
 
                 analysis.setDiagramMetrics(diff.getMetrics());
 
