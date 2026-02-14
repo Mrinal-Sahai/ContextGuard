@@ -1,5 +1,6 @@
 package io.contextguard.dto;
 
+import io.contextguard.analysis.flow.CallGraphDiff;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,5 +31,8 @@ public class PRIntelligenceResponse {
     private DifficultyAssessment difficulty;
     private AIGeneratedNarrative narrative;
     private BlastRadiusAssessment blastRadius;
+    private String mermaidDiagram;
+    private String diagramVerificationNotes;
+    private CallGraphDiff.GraphMetrics diagramMetrics;
     private Instant analyzedAt;
 }

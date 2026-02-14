@@ -41,28 +41,6 @@ public class ASTParserService {
     private final ExecutorService executorService;
     private final GitHubApiClient githubService ;
 
-    private static final Map<String, String> EXTENSION_TO_LANGUAGE = Map.ofEntries(
-            Map.entry(".java", "java"),
-            Map.entry(".js", "javascript"),
-            Map.entry(".jsx", "javascript"),
-            Map.entry(".ts", "typescript"),
-            Map.entry(".tsx", "typescript"),
-            Map.entry(".py", "python"),
-            Map.entry(".rb", "ruby"),
-            Map.entry(".go", "go"),
-            Map.entry(".rs", "rust"),
-            Map.entry(".c", "c"),
-            Map.entry(".cpp", "cpp"),
-            Map.entry(".cc", "cpp"),
-            Map.entry(".h", "c"),
-            Map.entry(".hpp", "cpp"),
-            Map.entry(".cs", "csharp"),
-            Map.entry(".php", "php"),
-            Map.entry(".kt", "kotlin"),
-            Map.entry(".swift", "swift"),
-            Map.entry(".scala", "scala")
-    );
-
     public ASTParserService(GitHubApiClient githubService) {
         this.githubService = githubService;
         this.javaParser = new JavaParser();
@@ -234,47 +212,6 @@ public class ASTParserService {
         });
     }
 
-
-    private void parseJavaFile(Path file, Path sourceRoot,
-                               Map<String, FlowNode> nodes,
-                               List<FlowEdge> edges) throws IOException {
-
-        ParseResult<CompilationUnit> result = javaParser.parse(file);
-
-        if (!result.isSuccessful() || !result.getResult().isPresent()) {
-            return;
-        }
-
-        CompilationUnit cu = result.getResult().get();
-        String packageName = cu.getPackageDeclaration()
-                                     .map(pd -> pd.getName().asString())
-                                     .orElse("");
-
-        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
-            String className = packageName.isEmpty() ? cls.getNameAsString()
-                                       : packageName + "." + cls.getNameAsString();
-
-            cls.getMethods().forEach(method -> {
-                String methodId = className + "." + method.getNameAsString();
-
-                FlowNode node = FlowNode.builder()
-                                        .id(methodId)
-                                        .label(method.getNameAsString())
-                                        .type(FlowNode.NodeType.METHOD)
-                                        .status(FlowNode.NodeStatus.UNCHANGED)
-                                        .filePath(sourceRoot.relativize(file).toString())
-                                        .startLine(method.getBegin().map(p -> p.line).orElse(0))
-                                        .endLine(method.getEnd().map(p -> p.line).orElse(0))
-                                        .returnType(method.getType().asString())
-                                        .annotations(extractAnnotations(method))
-                                        .cyclomaticComplexity(computeComplexity(method))
-                                        .build();
-
-                nodes.put(methodId, node);
-                extractMethodCalls(method, methodId, className, edges);
-            });
-        });
-    }
 
     private Set<String> extractAnnotations(MethodDeclaration method) {
         return method.getAnnotations().stream()

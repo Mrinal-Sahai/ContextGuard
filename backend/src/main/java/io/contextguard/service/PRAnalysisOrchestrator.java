@@ -120,7 +120,11 @@ public class PRAnalysisOrchestrator {
 
     public PRIntelligenceResponse getAnalysisById(UUID analysisId) {
         PRAnalysisResult result = cacheService.findById(analysisId);
-        return result.toResponse();
+        PRIntelligenceResponse res=result.toResponse();
+        res.setMermaidDiagram(result.getMermaidDiagram());
+        res.setDiagramVerificationNotes(result.getDiagramVerificationNotes());
+        res.setDiagramMetrics(result.getDiagramMetrics());
+        return res;
     }
 
     public PRIntelligenceResponse getAnalysisByPR(String owner, String repo, Integer prNumber) {
