@@ -1,10 +1,9 @@
 // src/App.tsx - UPDATED WITH ROUTING
 
 import React from 'react';
-import PRAnalysisLandingPage from './components/PRAnalysisLandingPage';
-import PRIntelligenceDashboard from './components/ContextGuardDashBoard';
+import  ContextGuardDashboard from './components/MainDashboard';
+import '../styles.css'
 import ErrorBoundary from './components/ErrorBoundary';
-import './App.css';
 
 /**
  * Main app with simple routing.
@@ -14,16 +13,10 @@ import './App.css';
  * - /dashboard?id={uuid} → Analysis results
  */
 const App: React.FC = () => {
-  const currentPath = window.location.pathname;
-  const searchParams = new URLSearchParams(window.location.search);
-  const hasAnalysisId = searchParams.has('id');
 
   // Simple routing logic
   const renderContent = () => {
-    if (currentPath === '/dashboard' && hasAnalysisId) {
-      return <PRIntelligenceDashboard />;
-    }
-    return <PRAnalysisLandingPage />;
+     return <ContextGuardDashboard />;
   };
 
   return (
