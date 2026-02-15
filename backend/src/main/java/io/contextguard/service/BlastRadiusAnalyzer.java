@@ -39,6 +39,7 @@ public class BlastRadiusAnalyzer {
 
         // Generate assessment
         String assessment = generateAssessment(scope, modules.size(), impactedAreas);
+        System.out.println("Blast Radius Analysis done");
 
         return BlastRadiusAssessment.builder()
                        .scope(scope)

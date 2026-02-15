@@ -61,13 +61,17 @@ public class PRAnalysisOrchestrator {
         }
 
         PRMetadata metadata = githubService.fetchPRMetadata(prId);
+        System.out.println("Fetched PR metadata: " + metadata);
 
         List<GitHubFile> ghFiles = githubService.fetchDiffFiles(prId);
+        System.out.println("No. of fetched files: " + ghFiles.size());
 
+        System.out.println("Started analysis pipeline");
         PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider(), metadata, ghFiles);
 
         PRAnalysisResult result = cacheService.save(prId, intelligence);
         List<String> changedFileList=intelligence.getMetrics().getFileChanges().stream().map(FileChangeSummary::getFilename).toList();
+        System.out.println("Starting to generate diagram and Ai summary");
         diagramService.generateDiagram(
                 result.getId(),
                 intelligence,
@@ -78,6 +82,8 @@ public class PRAnalysisOrchestrator {
                 request.getAiProvider(),
                 ghFiles
         );
+        System.out.println("Completed  to generate diagram and Ai summary, Returning response");
+
 
 
         return new PRAnalysisResponse(
@@ -91,12 +97,17 @@ public class PRAnalysisOrchestrator {
 
 
         DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
+        System.out.println("Diff metrics Analysis done: "+metrics);
+
 
         RiskAssessment risk = riskEngine.assessRisk(metadata, metrics);
+        System.out.println("Risk Analysis done: "+risk);
 
         DifficultyAssessment difficulty = difficultyEngine.assessDifficulty(metadata, metrics);
+        System.out.println("Difficulty Analysis done: "+difficulty);
 
         BlastRadiusAssessment blastRadius = blastRadiusAnalyzer.analyze(metrics);
+        System.out.println("Blast Radius Analysis done: "+ blastRadius);
 
         // FIX: Use builder pattern instead of constructor
         return PRIntelligenceResponse.builder()

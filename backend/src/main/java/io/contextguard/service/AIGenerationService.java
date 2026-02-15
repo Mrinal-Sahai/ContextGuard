@@ -61,11 +61,15 @@ public class AIGenerationService {
                 metadata, metrics, risk, difficulty, blastRadius, files, callGraph
         );
 
+        System.out.println("Prompt for Ai Sevice :"+prompt);
+
         try {
             AIClient client = aiRouter.getClient(provider);
             String aiResponse = client.generateSummary(prompt);
             String cleaned = cleanJson(aiResponse);
             String json = extractJsonObject(cleaned);
+
+            System.out.println("Ai Response :"+json);
 
             return parseJsonResponse(json);
 

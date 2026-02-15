@@ -47,6 +47,7 @@ public class CacheService {
         result.setPrNumber(prId.getPrNumber());
         result.setIntelligence(intelligence); // Serialize to JSON
         result.setAnalyzedAt(java.time.Instant.now());
+        System.out.println("Saving Result:"+ result);
 
         return repository.save(result);
     }

@@ -9,7 +9,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.List;
 import java.util.Map;
 
 @Component("openAIClient")
@@ -57,6 +56,10 @@ public class OpenAIApiClient implements AIClient {
             HttpEntity<Map<String, Object>> entity =
                     new HttpEntity<>(requestBody, headers);
 
+            System.out.println("Generating summary for prompt: " + prompt);
+            System.out.println("OpenAI API call " + BASE_URL);
+
+
             ResponseEntity<String> response = restTemplate.exchange(
                     BASE_URL,
                     HttpMethod.POST,
@@ -76,11 +79,13 @@ public class OpenAIApiClient implements AIClient {
 
         }
         catch (HttpClientErrorException.TooManyRequests e) {
+            System.out.println("OpenAi quota exceeded. Falling back or retrying later. Exception "+e.getMessage());
             throw new AIServiceException(
                     "OpenAI quota exceeded. Falling back or retrying later.", e
             );
         }
         catch (Exception e) {
+            System.out.println("OpenAi API call failed. Exception "+e.getMessage());
             throw new AIServiceException("OpenAI API call failed", e);
         }
     }

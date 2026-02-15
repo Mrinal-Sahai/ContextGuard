@@ -64,9 +64,13 @@ public class DiagramService {
             try {
                 // Step 1: Extract call graph
                 CallGraphDiff diff = flowExtractor.generateDiagram(intelligence,prMetadata, githubToken, prIdentifier, changedFiles);
+                System.out.println("Extracted Call Graph Diff: " + diff);
+
 
                 // Step 2: Render Mermaid
                 String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
+                System.out.println("Built mermaid diagram code");
+
 
                 // Step 3: Persist
                 PRAnalysisResult analysis = repository.findById(analysisId)
