@@ -11,19 +11,7 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Asynchronous diagram generation service.
- *
- * WHY ASYNC:
- * - Repository cloning takes 5-30 seconds
- * - AST parsing takes 10-60 seconds for large repos
- * - Don't block PR analysis completion
- *
- * FLOW:
- * 1. PR analysis completes → returns immediately
- * 2. Diagram generation starts in background
- * 3. Frontend polls /diagram endpoint until ready
- */
+
 @Slf4j
 @Service
 public class DiagramService {
@@ -44,12 +32,7 @@ public class DiagramService {
         this.aiService = aiService;
     }
 
-    /**
-     * Generate diagram asynchronously.
-     *
-     * @param prMetadata PR metadata with branches
-     * @param githubToken Optional GitHub token
-     */
+
     public void generateDiagram(
             UUID analysisId,
             PRIntelligenceResponse intelligence,
