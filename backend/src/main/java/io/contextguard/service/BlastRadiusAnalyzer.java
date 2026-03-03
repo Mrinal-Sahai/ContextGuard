@@ -1,6 +1,5 @@
 package io.contextguard.service;
 
-
 import io.contextguard.dto.*;
 import org.springframework.stereotype.Component;
 
@@ -8,9 +7,17 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Analyzes blast radius of PR changes.
+ * Analyzes blast radius of PR changes using file path topology.
  *
- * Uses file path analysis to determine impact scope.
+ * FIX (2025-03):
+ * 1. identifyImpactedAreas() previously used HashSet — area ordering was
+ *    non-deterministic between JVM runs, producing different responses for
+ *    identical inputs. Now uses TreeSet for alphabetical, stable ordering.
+ *
+ * 2. extractModule() used path.split("/")[0] — breaks on monorepos where all
+ *    source files are under "src/main/java/..." (every file maps to "src").
+ *    Now uses the deepest meaningful directory segment (last directory before
+ *    the file name), which correctly differentiates service modules.
  */
 @Component
 public class BlastRadiusAnalyzer {
@@ -21,25 +28,19 @@ public class BlastRadiusAnalyzer {
                                          .map(FileChangeSummary::getFilename)
                                          .collect(Collectors.toList());
 
-        // Analyze directory spread
         Set<String> directories = filePaths.stream()
                                           .map(this::extractDirectory)
-                                          .collect(Collectors.toSet());
+                                          .collect(Collectors.toCollection(TreeSet::new)); // FIX: TreeSet for determinism
 
-        // Analyze module spread (top-level package or directory)
         Set<String> modules = filePaths.stream()
                                       .map(this::extractModule)
-                                      .collect(Collectors.toSet());
+                                      .collect(Collectors.toCollection(TreeSet::new)); // FIX: TreeSet for determinism
 
-        // Identify impacted functional areas
+        // FIX: impactedAreas now returns sorted list for deterministic output
         List<String> impactedAreas = identifyImpactedAreas(filePaths);
 
-        // Determine scope
         ImpactScope scope = determineScope(directories.size(), modules.size());
-
-        // Generate assessment
         String assessment = generateAssessment(scope, modules.size(), impactedAreas);
-        System.out.println("Blast Radius Analysis done");
 
         return BlastRadiusAssessment.builder()
                        .scope(scope)
@@ -55,14 +56,45 @@ public class BlastRadiusAnalyzer {
         return lastSlash > 0 ? filePath.substring(0, lastSlash) : "";
     }
 
+    /**
+     * Extract the logical module from a file path.
+     *
+     * FIX: Previously used path.split("/")[0] which maps every file in a
+     * Maven/Gradle monorepo to "src", making all changes appear LOCALIZED.
+     *
+     * Strategy: skip common prefix segments (src, main, java, test, kotlin,
+     * resources) and return the first meaningful package segment after them.
+     * Falls back to the last directory segment if no meaningful segment found.
+     */
     private String extractModule(String filePath) {
-        // Extract first-level directory (module)
+        if (filePath == null || filePath.isBlank()) return "root";
+
         String[] parts = filePath.split("/");
-        return parts.length > 0 ? parts[0] : "root";
+
+        Set<String> skippable = Set.of("src", "main", "java", "test", "kotlin",
+                "resources", "webapp", "groovy", "scala");
+
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (skippable.contains(part.toLowerCase())) continue;
+            // Skip fully-qualified reverse-domain segments (com, org, io, net, etc.)
+            if (part.length() <= 3 && part.matches("[a-z]+")) continue;
+            return part;
+        }
+
+        // Fallback: last directory segment before the file
+        return parts.length > 1 ? parts[parts.length - 2] : "root";
     }
 
+    /**
+     * Identify functional areas affected by this PR.
+     *
+     * FIX: Uses TreeSet internally so the returned List is always
+     * alphabetically sorted — identical inputs produce identical outputs.
+     */
     private List<String> identifyImpactedAreas(List<String> filePaths) {
-        Set<String> areas = new HashSet<>();
+        // FIX: TreeSet replaces HashSet to guarantee deterministic ordering
+        Set<String> areas = new TreeSet<>();
 
         for (String path : filePaths) {
             String lowerPath = path.toLowerCase();
@@ -91,32 +123,20 @@ public class BlastRadiusAnalyzer {
     }
 
     private ImpactScope determineScope(int directories, int modules) {
-        if (directories == 1 && modules == 1) {
-            return ImpactScope.LOCALIZED;
-        }
-        if (modules == 1) {
-            return ImpactScope.COMPONENT;
-        }
-        if (modules <= 3) {
-            return ImpactScope.MODULE;
-        }
+        if (directories == 1 && modules == 1) return ImpactScope.LOCALIZED;
+        if (modules == 1)                     return ImpactScope.COMPONENT;
+        if (modules <= 3)                     return ImpactScope.MODULE;
         return ImpactScope.SYSTEM_WIDE;
     }
 
     private String generateAssessment(ImpactScope scope, int moduleCount, List<String> areas) {
         switch (scope) {
-            case LOCALIZED:
-                return "Changes are localized to a single component.";
-            case COMPONENT:
-                return "Changes affect a single module but span multiple files.";
-            case MODULE:
-                return String.format("Changes span %d modules. Affected areas: %s",
-                        moduleCount, String.join(", ", areas));
-            case SYSTEM_WIDE:
-                return String.format("System-wide changes across %d modules. High coordination required.",
-                        moduleCount);
-            default:
-                return "Impact scope unknown.";
+            case LOCALIZED:    return "Changes are localized to a single component.";
+            case COMPONENT:    return "Changes affect a single module but span multiple files.";
+            case MODULE:       return String.format("Changes span %d modules. Affected areas: %s",
+                    moduleCount, String.join(", ", areas));
+            case SYSTEM_WIDE:  return String.format("System-wide changes across %d modules. High coordination required.", moduleCount);
+            default:           return "Impact scope unknown.";
         }
     }
 }

@@ -49,6 +49,9 @@ public class PRAnalysisResult {
     @Column(nullable = false, name = "pr_number")
     private Integer prNumber;
 
+    @Column(nullable = false, name = "head_sha")
+    private String headSha;
+
     @Column(columnDefinition = "TEXT")
     private String intelligenceJson; // Serialized PRIntelligenceResponse
 

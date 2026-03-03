@@ -15,36 +15,47 @@ import java.util.List;
  * PR Risk Formula:
  *
  * PR_Risk =
- *   0.35 × averageFileRisk
- * + 0.30 × peakFileRisk
+ *   0.30 × averageFileRisk
+ * + 0.25 × peakFileRisk
  * + 0.20 × highRiskFileDensity
  * + 0.15 × criticalPathFileDensity
+ * + 0.10 × publicAPIDensity
  *
- * DEFINITIONS:
+ * WEIGHTS RATIONALE (sum = 1.0):
  *
- * 1. Average File Risk
+ * 1. Average File Risk (0.30)
  *    → Mean numeric risk across all modified files
  *    → Represents overall instability level
  *
- * 2. Peak File Risk
+ * 2. Peak File Risk (0.25)
  *    → Highest individual file risk
  *    → Captures single-point catastrophic failure risk
  *
- * 3. High-Risk File Density
+ * 3. High-Risk File Density (0.20)
  *    → Proportion of files classified HIGH or CRITICAL
  *    → Represents concentration of serious changes
  *
- * 4. Critical Path File Density
+ * 4. Critical Path File Density (0.15)
  *    → Proportion of files affecting business-critical paths
  *    → Represents systemic business impact exposure
+ *
+ * 5. Public API Density (0.10)
+ *    → Proportion of files touching public API surface
+ *    → Interface stability / breaking change risk
+ *
+ * FIX (2025-03): Weights previously summed to 1.10, causing
+ * overallScore to exceed 1.0 and breaking the CRITICAL threshold
+ * at 0.75. All weights now sum exactly to 1.0.
  */
 @Service
 public class RiskScoringEngine {
 
-    private static final double WEIGHT_AVG = 0.35;
-    private static final double WEIGHT_PEAK = 0.30;
-    private static final double WEIGHT_HIGH_DENSITY = 0.20;
+    // FIX: Weights now sum to exactly 1.0 (previously 1.10 — caused score > 1.0)
+    private static final double WEIGHT_AVG             = 0.30;
+    private static final double WEIGHT_PEAK            = 0.25;
+    private static final double WEIGHT_HIGH_DENSITY    = 0.20;
     private static final double WEIGHT_CRITICAL_DENSITY = 0.15;
+    private static final double WEIGHT_PUBLIC_API       = 0.10;
 
     public RiskAssessment assessRisk(PRMetadata metadata, DiffMetrics metrics) {
 
@@ -60,7 +71,6 @@ public class RiskScoringEngine {
         List<FileChangeSummary> files = metrics.getFileChanges();
         int totalFiles = files.size();
 
-        // Convert file-level risk to numeric
         double sumRisk = 0.0;
         double peakRisk = 0.0;
         int highRiskCount = 0;
@@ -90,18 +100,20 @@ public class RiskScoringEngine {
             }
         }
 
-
-        double averageRisk = sumRisk / totalFiles;
-        double highRiskDensity = (double) highRiskCount / totalFiles;
-        double criticalDensity = (double) criticalPathCount / totalFiles;
-        double publicAPIDensity = (double) publicAPICount / totalFiles;
+        double averageRisk          = sumRisk / totalFiles;
+        double highRiskDensity      = (double) highRiskCount / totalFiles;
+        double criticalDensity      = (double) criticalPathCount / totalFiles;
+        double publicAPIDensity     = (double) publicAPICount / totalFiles;
 
         double overallScore =
-                (WEIGHT_AVG * averageRisk) +
-                        (WEIGHT_PEAK * peakRisk) +
-                        (WEIGHT_HIGH_DENSITY * highRiskDensity) +
+                (WEIGHT_AVG              * averageRisk)     +
+                        (WEIGHT_PEAK             * peakRisk)        +
+                        (WEIGHT_HIGH_DENSITY     * highRiskDensity) +
                         (WEIGHT_CRITICAL_DENSITY * criticalDensity) +
-                        (0.10 * publicAPIDensity);
+                        (WEIGHT_PUBLIC_API       * publicAPIDensity);
+
+        // FIX: Clamp to [0, 1] to guard against any future weight drift
+        overallScore = Math.min(1.0, Math.max(0.0, overallScore));
 
         RiskLevel level = categorize(overallScore);
 
@@ -120,22 +132,15 @@ public class RiskScoringEngine {
                        .build();
     }
 
-    /**
-     * Convert categorical file risk to numeric score.
-     * These values represent increasing regression probability.
-     */
     private double mapRiskToNumeric(RiskLevel level) {
         return switch (level) {
-            case LOW -> 0.1;
-            case MEDIUM -> 0.4;
-            case HIGH -> 0.75;
+            case LOW      -> 0.1;
+            case MEDIUM   -> 0.4;
+            case HIGH     -> 0.75;
             case CRITICAL -> 1.0;
         };
     }
 
-    /**
-     * Categorize final PR risk.
-     */
     private RiskLevel categorize(double score) {
         if (score < 0.25) return RiskLevel.LOW;
         if (score < 0.50) return RiskLevel.MEDIUM;

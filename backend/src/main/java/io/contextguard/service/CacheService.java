@@ -38,7 +38,7 @@ public class CacheService {
     }
 
     @Transactional
-    public PRAnalysisResult save(PRIdentifier prId, PRIntelligenceResponse intelligence) {
+    public PRAnalysisResult save(PRIdentifier prId, PRIntelligenceResponse intelligence, String headSha) {
 
         PRAnalysisResult result = new PRAnalysisResult();
         result.setId(UUID.randomUUID());
@@ -47,6 +47,7 @@ public class CacheService {
         result.setPrNumber(prId.getPrNumber());
         result.setIntelligence(intelligence); // Serialize to JSON
         result.setAnalyzedAt(java.time.Instant.now());
+        result.setHeadSha(headSha);
         System.out.println("Saving Result:"+ result);
 
         return repository.save(result);

@@ -9,12 +9,16 @@ import java.util.regex.Pattern;
  * Estimates cyclomatic complexity delta using heuristics.
  *
  * WHY HEURISTIC, NOT REAL CYCLOMATIC COMPLEXITY:
- * - Real complexity requires AST parsing (out of scope)
- * - Heuristic approximation is "good enough" for risk scoring
+ * - Real complexity requires AST parsing (handled by ASTParserService)
+ * - Heuristic is used at the diff-ingestion stage before AST runs
  * - Defensible: "We count decision points, not full control flow"
  *
  * Heuristic: Count occurrences of control keywords in added/deleted lines.
- * Keywords: if, else, for, while, switch, case, catch, &&, ||
+ *
+ * FIX (2025-03): Added ternary operator (? token) and enhanced-for loop
+ * patterns that were previously omitted. Ternary operators are significant
+ * in functional-style Java (streams, builders) and their absence caused
+ * underestimation of complexity in modern codebases.
  */
 @Component
 public class ComplexityEstimator {
@@ -28,22 +32,23 @@ public class ComplexityEstimator {
             Pattern.compile("\\bcase\\b"),
             Pattern.compile("\\bcatch\\b"),
             Pattern.compile("&&"),
-            Pattern.compile("\\|\\|")
+            Pattern.compile("\\|\\|"),
+            // FIX: ternary operator — significant in stream/builder chains
+            Pattern.compile("\\?\\s*[^:\\s]"),       // "? value" — avoids matching "?." (safe nav)
+            // FIX: enhanced-for loop adds one decision point (element exhaustion)
+            Pattern.compile("\\bfor\\s*\\(\\s*\\w+\\s+\\w+\\s*:"),
     };
 
     /**
-     * Estimate complexity delta = (added complexity) - (deleted complexity)
+     * Estimate complexity delta = (added complexity) - (deleted complexity).
      */
     public int estimateDelta(List<String> addedLines, List<String> deletedLines) {
-
-        int addedComplexity = estimateComplexity(addedLines);
+        int addedComplexity   = estimateComplexity(addedLines);
         int deletedComplexity = estimateComplexity(deletedLines);
-
         return addedComplexity - deletedComplexity;
     }
 
     private int estimateComplexity(List<String> lines) {
-
         int count = 0;
         for (String line : lines) {
             for (Pattern pattern : COMPLEXITY_KEYWORDS) {

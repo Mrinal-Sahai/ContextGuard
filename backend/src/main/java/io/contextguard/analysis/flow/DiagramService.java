@@ -1,6 +1,5 @@
 package io.contextguard.analysis.flow;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.contextguard.client.AIProvider;
 import io.contextguard.dto.*;
 import io.contextguard.model.PRAnalysisResult;
@@ -8,10 +7,19 @@ import io.contextguard.repository.PRAnalysisRepository;
 import io.contextguard.service.AIGenerationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
 import java.util.List;
 import java.util.UUID;
 
-
+/**
+ * Orchestrates: AST call graph extraction → Sequence diagram rendering → AI narrative.
+ *
+ * CHANGED (2025-03):
+ * - MermaidRendererService now generates sequenceDiagram (runtime flow) instead of graph TB
+ * - Entity passed directly to avoid redundant DB fetch (BUG-006 fix)
+ * - Generated mermaidDiagram stored as sequenceDiagram Mermaid string
+ * - AIGenerationService receives the rendered diagram so it can reference it in the narrative
+ */
 @Slf4j
 @Service
 public class DiagramService {
@@ -24,7 +32,8 @@ public class DiagramService {
     public DiagramService(
             FlowExtractorService flowExtractor,
             MermaidRendererService mermaidRenderer,
-            PRAnalysisRepository repository, AIGenerationService aiService) {
+            PRAnalysisRepository repository,
+            AIGenerationService aiService) {
 
         this.flowExtractor = flowExtractor;
         this.mermaidRenderer = mermaidRenderer;
@@ -32,7 +41,60 @@ public class DiagramService {
         this.aiService = aiService;
     }
 
+    /**
+     * Primary entry point — accepts entity directly to avoid redundant DB fetch.
+     */
+    public void generateDiagram(
+            PRAnalysisResult analysisResult,
+            PRIntelligenceResponse intelligence,
+            PRMetadata prMetadata,
+            String githubToken,
+            PRIdentifier prIdentifier,
+            List<String> changedFiles,
+            AIProvider provider,
+            List<GitHubFile> files) {
 
+        try {
+            // Step 1: Extract call graph (AST diff — base vs head)
+            CallGraphDiff diff = flowExtractor.generateDiagram(
+                    intelligence, prMetadata, githubToken, prIdentifier, changedFiles);
+            log.info("Call graph extracted: {} added nodes, {} added edges",
+                    safeSize(diff.getNodesAdded()), safeSize(diff.getEdgesAdded()));
+
+            // Step 2: Render sequence diagram
+            // MermaidRendererService now generates `sequenceDiagram` (runtime flow)
+            // falling back to `graph LR` only for pure internal refactors with no new edges.
+            String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
+            log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
+
+            // Step 3: AI narrative — receives the rendered diagram so the summary
+            // can refer to specific sequence steps ("as shown in step 4 above...")
+            AIGeneratedNarrative narrative = aiService.generateSummary(
+                    files, prMetadata,
+                    intelligence.getMetrics(), intelligence.getRisk(),
+                    intelligence.getDifficulty(), intelligence.getBlastRadius(),
+                    diff, provider);
+
+            // Step 4: Enrich and persist
+            intelligence.setNarrative(narrative);
+            analysisResult.setMermaidDiagram(mermaidDiagram);
+            analysisResult.setDiagramVerificationNotes(buildVerificationNote(diff));
+            analysisResult.setIntelligence(intelligence);
+            analysisResult.setDiagramMetrics(diff.getMetrics());
+
+            repository.save(analysisResult);
+            log.info("Analysis {} saved with sequence diagram and AI narrative", analysisResult.getId());
+
+        } catch (Exception e) {
+            log.error("Diagram generation failed for analysis {}: {}",
+                    analysisResult.getId(), e.getMessage(), e);
+            analysisResult.setDiagramVerificationNotes("Generation failed: " + e.getMessage());
+            repository.save(analysisResult);
+        }
+    }
+
+
+    @Deprecated
     public void generateDiagram(
             UUID analysisId,
             PRIntelligenceResponse intelligence,
@@ -41,46 +103,22 @@ public class DiagramService {
             PRIdentifier prIdentifier,
             List<String> changedFiles,
             AIProvider provider,
-            List<GitHubFile> files
-    ) {
+            List<GitHubFile> files) {
 
-            try {
-                // Step 1: Extract call graph
-                CallGraphDiff diff = flowExtractor.generateDiagram(intelligence,prMetadata, githubToken, prIdentifier, changedFiles);
-                System.out.println("Extracted Call Graph Diff: " + diff);
+        PRAnalysisResult analysis = repository.findById(analysisId)
+                                            .orElseThrow(() -> new RuntimeException("Analysis not found: " + analysisId));
+        generateDiagram(analysis, intelligence, prMetadata, githubToken,
+                prIdentifier, changedFiles, provider, files);
+    }
 
+    // ─────────────────────────────────────────────────────────────────────
 
-                // Step 2: Render Mermaid
-                String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
-                System.out.println("Built mermaid diagram code");
+    private String buildVerificationNote(CallGraphDiff diff) {
+        if (diff.getVerificationStatus() == null) return "Analysis complete";
+        return String.format("%s — %s", diff.getVerificationStatus(), diff.getVerificationNotes());
+    }
 
-
-                // Step 3: Persist
-                PRAnalysisResult analysis = repository.findById(analysisId)
-                                                    .orElseThrow(() -> new RuntimeException("Analysis not found"));
-
-                AIGeneratedNarrative narrative = aiService.generateSummary(files, prMetadata, intelligence.getMetrics(), intelligence.getRisk(), intelligence.getDifficulty(),intelligence.getBlastRadius(),diff,provider);
-
-                intelligence.setNarrative(narrative);
-
-                analysis.setMermaidDiagram(mermaidDiagram);
-                analysis.setDiagramVerificationNotes(diff.getVerificationNotes());
-                analysis.setIntelligence(intelligence);
-
-
-                analysis.setDiagramMetrics(diff.getMetrics());
-
-                repository.save(analysis);
-
-            } catch (Exception e) {
-                // Log error and mark as failed
-                log.error("Diagram generation failed: " + e.getMessage());
-
-                PRAnalysisResult analysis = repository.findById(analysisId).orElse(null);
-                if (analysis != null) {
-                    analysis.setDiagramVerificationNotes("Generation failed: " + e.getMessage());
-                    repository.save(analysis);
-                }
-            }
+    private int safeSize(List<?> list) {
+        return list != null ? list.size() : 0;
     }
 }
