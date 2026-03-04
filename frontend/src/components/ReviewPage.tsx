@@ -296,10 +296,12 @@ export default function ReviewPage() {
           </div>
         </div>
 
+{analysisData.narrative && (
         <NarrativeSection
           narrative={analysisData.narrative}
           isDarkMode={isDarkMode}
         />
+)}
 
         {/* File Changes */}
         <div className={`border rounded-xl p-6 ${cardBg}`}>

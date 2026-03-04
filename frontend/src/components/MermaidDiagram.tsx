@@ -155,7 +155,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
   const secondary = isDarkMode ? 'text-slate-400' : 'text-slate-600';
   const btn = isDarkMode
     ? 'bg-slate-800 hover:bg-slate-700 border-slate-600'
-    : 'bg-slate-100 hover:bg-slate-200 border-slate-300';
+    : 'bg-slate-500 hover:bg-slate-200 border-slate-300';
 
   /* ------------------ UI ------------------ */
 
@@ -166,7 +166,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
         <div className="flex items-center gap-3">
           <Network className="w-5 h-5 text-indigo-500" />
           <div>
-            <h3 className={`font-semibold ${text}`}>Call Graph Visualization</h3>
+            <h3 className={`font-semibold ${text}`}>Sequence Diagram</h3>
             {verificationNotes && (
               <p className={`text-xs ${secondary}`}>{verificationNotes}</p>
             )}

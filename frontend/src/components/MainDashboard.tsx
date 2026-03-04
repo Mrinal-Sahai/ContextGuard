@@ -476,6 +476,7 @@ const ContextGuardDashboard: React.FC = () => {
               </div>
 
               {/* AI Narrative */}
+              
               <NarrativeSection narrative={analysisData.narrative} isDarkMode={isDarkMode} />
 
               {/* File Changes */}

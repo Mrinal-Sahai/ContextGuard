@@ -145,43 +145,50 @@ public class ASTParserService {
         ParseResult<CompilationUnit> result;
         try {
             result = javaParser.parse(content);
-        } catch (Exception e) {
-            logger.debug("JavaParser failed for {}: {}", filePath, e.getMessage());
+        } catch (Throwable t) {
+            logger.debug("JavaParser failed for {}: {}", filePath, t.getMessage());
             return;
         }
 
         if (!result.isSuccessful() || result.getResult().isEmpty()) return;
 
-        CompilationUnit cu = result.getResult().get();
-        String packageName = cu.getPackageDeclaration()
-                                     .map(pd -> pd.getName().asString())
-                                     .orElse("");
+        try {
 
-        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
-            String className = packageName.isEmpty()
-                                       ? cls.getNameAsString()
-                                       : packageName + "." + cls.getNameAsString();
+            CompilationUnit cu = result.getResult().get();
+            String packageName = cu.getPackageDeclaration()
+                                         .map(pd -> pd.getName().asString())
+                                         .orElse("");
 
-            cls.getMethods().forEach(method -> {
-                String methodId = className + "." + method.getNameAsString();
+            cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
+                String className = packageName.isEmpty()
+                                           ? cls.getNameAsString()
+                                           : packageName + "." + cls.getNameAsString();
 
-                FlowNode node = FlowNode.builder()
-                                        .id(methodId)
-                                        .label(method.getNameAsString())
-                                        .type(FlowNode.NodeType.METHOD)
-                                        .status(FlowNode.NodeStatus.UNCHANGED)
-                                        .filePath(filePath)
-                                        .startLine(method.getBegin().map(p -> p.line).orElse(0))
-                                        .endLine(method.getEnd().map(p -> p.line).orElse(0))
-                                        .returnType(method.getType().asString())
-                                        .annotations(extractAnnotations(method))
-                                        .cyclomaticComplexity(computeComplexity(method))
-                                        .build();
+                cls.getMethods().forEach(method -> {
+                    String methodId = className + "." + method.getNameAsString();
 
-                nodes.put(methodId, node);
-                extractMethodCalls(method, methodId, className, edges);
+                    FlowNode node = FlowNode.builder()
+                                            .id(methodId)
+                                            .label(method.getNameAsString())
+                                            .type(FlowNode.NodeType.METHOD)
+                                            .status(FlowNode.NodeStatus.UNCHANGED)
+                                            .filePath(filePath)
+                                            .startLine(method.getBegin().map(p -> p.line).orElse(0))
+                                            .endLine(method.getEnd().map(p -> p.line).orElse(0))
+                                            .returnType(method.getType().asString())
+                                            .annotations(extractAnnotations(method))
+                                            .cyclomaticComplexity(computeComplexity(method))
+                                            .build();
+
+                    nodes.put(methodId, node);
+                    extractMethodCalls(method, methodId, className, edges);
+
+                });
             });
-        });
+        }
+        catch (Throwable t) {
+            logger.debug("Skipping unparsable Java file {} : {}", filePath, t.getMessage());
+        }
     }
 
     private Set<String> extractAnnotations(MethodDeclaration method) {
