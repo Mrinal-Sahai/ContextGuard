@@ -15,7 +15,7 @@ import { useNavigate } from "react-router-dom";
 
 
 const ContextGuardDashboard: React.FC = () => {
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [prUrl, setPrUrl] = useState('');
   const [aiProvider, setAiProvider] = useState<'GEMINI' | 'OPENAI'>('OPENAI');
   const [githubToken, setGithubToken] = useState('');

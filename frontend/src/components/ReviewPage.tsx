@@ -38,7 +38,7 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
 
   const textPrimary = isDarkMode ? "text-white" : "text-slate-900";
   const textSecondary = isDarkMode ? "text-slate-400" : "text-slate-600";
@@ -105,7 +105,7 @@ export default function ReviewPage() {
   if (error || !analysisData)
     return (
       <div className={`flex items-center justify-center min-h-screen text-lg ${bgPage}`}>
-        Failed to load analysis
+        Loading Analysis
       </div>
     );
 
