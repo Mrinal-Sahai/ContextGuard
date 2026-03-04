@@ -67,6 +67,7 @@ public class AIGenerationService {
 
         try {
             AIClient client = aiRouter.getClient(provider);
+//            AIClient client=aiRouter.getClient(AIProvider.GEMINI);
             String aiResponse = client.generateSummary(prompt);
             String json = extractJsonObject(cleanJson(aiResponse));
             return parseJsonResponse(json);

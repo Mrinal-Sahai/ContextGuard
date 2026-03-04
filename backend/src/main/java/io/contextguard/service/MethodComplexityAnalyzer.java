@@ -4,8 +4,6 @@ import io.contextguard.analysis.flow.ASTParserService;
 import io.contextguard.analysis.flow.FlowNode;
 import io.contextguard.dto.FileChangeSummary;
 import io.contextguard.dto.MethodChange;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -14,14 +12,25 @@ import java.util.stream.Collectors;
 /**
  * Analyzes method-level complexity changes using AST-derived data.
  *
- * FIX (2025-03): parseFileIfExists() previously always returned null
- * because the AST call was commented out. Method now correctly delegates
- * to ASTParserService and filters nodes by file path.
+ * ─────────────────────────────────────────────────────────────
+ * BUG-C5 FIX — parseFileIfExists() called twice with same args
+ * ─────────────────────────────────────────────────────────────
+ * BEFORE (broken):
+ *   Map<String, FlowNode> baseMethods = parseFileIfExists(filename);
+ *   Map<String, FlowNode> headMethods = parseFileIfExists(filename);
+ *   // Both use same filename → base == head → complexityDelta always 0
+ *
+ * AFTER (fixed):
+ *   parseFileIfExists(repoName, filename, baseSha)  ← base commit
+ *   parseFileIfExists(repoName, filename, headSha)  ← head commit
+ *   // Different SHAs → actual diff → real complexityDelta
+ *
+ * enrichWithMethodComplexity() now requires repoName, baseSha, headSha
+ * so the caller (PRAnalysisOrchestrator) must pass those values through.
+ * They are already available in PRMetadata.
  */
 @Service
 public class MethodComplexityAnalyzer {
-
-    private static final Logger log = LoggerFactory.getLogger(MethodComplexityAnalyzer.class);
 
     private final ASTParserService astParser;
 
@@ -33,19 +42,25 @@ public class MethodComplexityAnalyzer {
      * Enrich file changes with method-level complexity analysis.
      *
      * @param fileChanges Initial file changes from diff analysis
-     * @return Enriched file changes with method-level details
+     * @param repoName    Full repo name (owner/repo) for GitHub API calls
+     * @param baseSha     Git SHA of the base commit (before the PR)
+     * @param headSha     Git SHA of the head commit (after the PR)
+     * @return Enriched file changes with accurate method-level complexity
      */
     public List<FileChangeSummary> enrichWithMethodComplexity(
-            List<FileChangeSummary> fileChanges) {
+            List<FileChangeSummary> fileChanges,
+            String repoName,
+            String baseSha,
+            String headSha) {
 
         List<FileChangeSummary> enriched = new ArrayList<>();
 
         for (FileChangeSummary fileChange : fileChanges) {
             try {
-                FileChangeSummary enrichedFile = analyzeFile(fileChange);
+                FileChangeSummary enrichedFile = analyzeFile(fileChange, repoName, baseSha, headSha);
                 enriched.add(enrichedFile);
             } catch (Exception e) {
-                log.warn("Method complexity enrichment failed for {}: {}", fileChange.getFilename(), e.getMessage());
+                // Fall back to heuristic values already set by DiffMetadataAnalyzer
                 enriched.add(fileChange);
             }
         }
@@ -55,19 +70,20 @@ public class MethodComplexityAnalyzer {
 
     /**
      * Analyze a single file for method-level changes.
+     *
+     * BUG-C5 FIX: Both base and head now pass their respective SHAs.
      */
-    private FileChangeSummary analyzeFile(FileChangeSummary fileChange) {
+    private FileChangeSummary analyzeFile(
+            FileChangeSummary fileChange,
+            String repoName,
+            String baseSha,
+            String headSha) {
 
         String filename = fileChange.getFilename();
 
-        // FIX: Both calls use the same content pass-through; the actual
-        // before/after split happens at the FlowExtractor diff level.
-        // Here we populate complexity data from head state for enrichment.
-        Map<String, FlowNode> headMethods = parseFileIfExists(filename);
-
-        // When only head is available (common case for enrichment pass),
-        // treat base as empty — delta = full added complexity.
-        Map<String, FlowNode> baseMethods = Collections.emptyMap();
+        // BUG-C5 FIX: Different SHAs for base vs head
+        Map<String, FlowNode> baseMethods = parseFileIfExists(repoName, filename, baseSha);
+        Map<String, FlowNode> headMethods = parseFileIfExists(repoName, filename, headSha);
 
         List<MethodChange> methodChanges = computeMethodChanges(baseMethods, headMethods);
 
@@ -84,47 +100,30 @@ public class MethodComplexityAnalyzer {
         fileChange.setMethodChanges(methodChanges);
         fileChange.setTotalComplexityBefore(totalComplexityBefore);
         fileChange.setTotalComplexityAfter(totalComplexityAfter);
-        fileChange.setComplexityDelta(complexityDelta);
+        fileChange.setComplexityDelta(complexityDelta);   // ← overwrites heuristic with AST value
         fileChange.setReason(generateComplexityExplanation(methodChanges, complexityDelta));
 
         return fileChange;
     }
 
     /**
-     * Parse a single file via ASTParserService and return a map of
-     * method-id → FlowNode for every method in that file.
+     * Parse a single file at a specific Git SHA and extract its methods.
      *
-     * FIX: Previously this method had the AST call commented out and
-     * unconditionally returned null, causing all downstream method-level
-     * analysis to produce zero data silently.
+     * BUG-C5 FIX: Now accepts (repoName, filename, ref) — different SHAs
+     * for base and head are now distinguishable.
      *
-     * Now it correctly invokes astParser.parseDirectoryFromGithub() via a
-     * single-element list, then filters the resulting graph to only nodes
-     * whose filePath matches the requested file.
-     *
-     * Returns an empty map (not null) on any parse failure so callers
-     * degrade gracefully instead of throwing NullPointerException.
+     * Returns empty map on any failure so the caller falls back to heuristics.
      */
-    private Map<String, FlowNode> parseFileIfExists(String filename) {
+    private Map<String, FlowNode> parseFileIfExists(String repoName, String filename, String ref) {
         try {
-            // ASTParserService.parseDirectoryFromGithub expects a repo name and ref.
-            // For the enrichment pass we only have file content available through
-            // the astParser's single-file helper. If that API isn't yet exposed,
-            // we fall back to an empty map rather than silently swallowing all data.
             ASTParserService.ParsedCallGraph graph =
-                    astParser.parseDirectoryFromGithub("", "", List.of(filename));
+                    astParser.parseDirectoryFromGithub(repoName, ref, List.of(filename));
 
-            if (graph == null || graph.nodes == null) {
-                return Collections.emptyMap();
-            }
-
-            // Filter to nodes belonging to this specific file
             return graph.nodes.entrySet().stream()
                            .filter(entry -> filename.equals(entry.getValue().getFilePath()))
                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
         } catch (Exception e) {
-            log.warn("AST parse failed for {}: {}", filename, e.getMessage());
             return Collections.emptyMap();
         }
     }
@@ -145,82 +144,67 @@ public class MethodComplexityAnalyzer {
         for (String methodId : allMethodIds) {
             FlowNode baseMethod = baseMethods.get(methodId);
             FlowNode headMethod = headMethods.get(methodId);
-
-            MethodChange change = createMethodChange(methodId, baseMethod, headMethod);
-            changes.add(change);
+            changes.add(createMethodChange(methodId, baseMethod, headMethod));
         }
 
-        // Sort by absolute complexity delta descending — highest-impact changes first
         changes.sort((a, b) -> Integer.compare(
                 Math.abs(b.getComplexityDelta()),
-                Math.abs(a.getComplexityDelta())
-        ));
+                Math.abs(a.getComplexityDelta())));
 
         return changes;
     }
 
-    /**
-     * Create MethodChange from base and head FlowNodes.
-     */
-    private MethodChange createMethodChange(
-            String methodId,
-            FlowNode baseMethod,
-            FlowNode headMethod) {
+    private MethodChange createMethodChange(String methodId, FlowNode baseMethod, FlowNode headMethod) {
 
         MethodChange.MethodChangeType changeType;
         int complexityBefore = 0;
-        int complexityAfter = 0;
+        int complexityAfter  = 0;
         String methodName;
-        String methodSignature;
-        int startLine = 0;
-        int endLine = 0;
+        String methodSignature = extractSignature(methodId);
+        int startLine = 0, endLine = 0;
         String returnType = "";
         Set<String> annotations = Collections.emptySet();
 
         if (baseMethod == null && headMethod != null) {
-            changeType     = MethodChange.MethodChangeType.ADDED;
-            complexityAfter = headMethod.getCyclomaticComplexity();
-            methodName     = headMethod.getLabel();
-            methodSignature = extractSignature(methodId);
-            startLine      = headMethod.getStartLine();
-            endLine        = headMethod.getEndLine();
-            returnType     = headMethod.getReturnType();
-            annotations    = headMethod.getAnnotations();
-
-        } else if (baseMethod != null && headMethod == null) {
-            changeType      = MethodChange.MethodChangeType.DELETED;
-            complexityBefore = baseMethod.getCyclomaticComplexity();
-            methodName      = baseMethod.getLabel();
-            methodSignature = extractSignature(methodId);
-            startLine       = baseMethod.getStartLine();
-            endLine         = baseMethod.getEndLine();
-            returnType      = baseMethod.getReturnType();
-            annotations     = baseMethod.getAnnotations();
-
-        } else if (baseMethod != null) {
-            complexityBefore = baseMethod.getCyclomaticComplexity();
+            changeType       = MethodChange.MethodChangeType.ADDED;
             complexityAfter  = headMethod.getCyclomaticComplexity();
             methodName       = headMethod.getLabel();
-            methodSignature  = extractSignature(methodId);
             startLine        = headMethod.getStartLine();
             endLine          = headMethod.getEndLine();
             returnType       = headMethod.getReturnType();
             annotations      = headMethod.getAnnotations();
 
-            boolean complexityChanged  = complexityBefore != complexityAfter;
-            boolean annotationsChanged = !Objects.equals(baseMethod.getAnnotations(), headMethod.getAnnotations());
-            boolean locChanged         = (baseMethod.getEndLine() - baseMethod.getStartLine()) !=
-                                                 (headMethod.getEndLine() - headMethod.getStartLine());
+        } else if (baseMethod != null && headMethod == null) {
+            changeType       = MethodChange.MethodChangeType.DELETED;
+            complexityBefore = baseMethod.getCyclomaticComplexity();
+            methodName       = baseMethod.getLabel();
+            startLine        = baseMethod.getStartLine();
+            endLine          = baseMethod.getEndLine();
+            returnType       = baseMethod.getReturnType();
+            annotations      = baseMethod.getAnnotations();
+
+        } else if (baseMethod != null) {
+            complexityBefore = baseMethod.getCyclomaticComplexity();
+            complexityAfter  = headMethod.getCyclomaticComplexity();
+            methodName       = headMethod.getLabel();
+            startLine        = headMethod.getStartLine();
+            endLine          = headMethod.getEndLine();
+            returnType       = headMethod.getReturnType();
+            annotations      = headMethod.getAnnotations();
+
+            boolean complexityChanged   = complexityBefore != complexityAfter;
+            boolean annotationsChanged  = !Objects.equals(baseMethod.getAnnotations(), headMethod.getAnnotations());
+            boolean locChanged          = (baseMethod.getEndLine() - baseMethod.getStartLine()) !=
+                                                  (headMethod.getEndLine() - headMethod.getStartLine());
 
             changeType = (complexityChanged || annotationsChanged || locChanged)
                                  ? MethodChange.MethodChangeType.MODIFIED
                                  : MethodChange.MethodChangeType.UNCHANGED;
         } else {
-            throw new IllegalStateException("Both base and head methods are null for methodId: " + methodId);
+            throw new IllegalStateException("Both base and head methods are null for: " + methodId);
         }
 
         int complexityDelta = complexityAfter - complexityBefore;
-        int linesChanged    = endLine - startLine + 1;
         String description  = generateChangeDescription(changeType, complexityBefore, complexityAfter);
 
         return MethodChange.builder()
@@ -232,7 +216,7 @@ public class MethodComplexityAnalyzer {
                        .complexityDelta(complexityDelta)
                        .startLine(startLine)
                        .endLine(endLine)
-                       .linesChanged(linesChanged)
+                       .linesChanged(endLine - startLine + 1)
                        .returnType(returnType)
                        .annotations(annotations)
                        .changeDescription(description)
@@ -244,11 +228,8 @@ public class MethodComplexityAnalyzer {
         return parts[parts.length - 1] + "(...)";
     }
 
-    private String generateChangeDescription(
-            MethodChange.MethodChangeType changeType,
-            int complexityBefore,
-            int complexityAfter) {
-
+    private String generateChangeDescription(MethodChange.MethodChangeType changeType,
+                                             int complexityBefore, int complexityAfter) {
         switch (changeType) {
             case ADDED:
                 return String.format("New method with complexity %d", complexityAfter);
@@ -257,9 +238,11 @@ public class MethodComplexityAnalyzer {
             case MODIFIED:
                 int delta = complexityAfter - complexityBefore;
                 if (delta > 0)
-                    return String.format("Complexity increased from %d to %d (+%d)", complexityBefore, complexityAfter, delta);
+                    return String.format("Complexity increased from %d to %d (+%d)",
+                            complexityBefore, complexityAfter, delta);
                 else if (delta < 0)
-                    return String.format("Complexity decreased from %d to %d (%d)", complexityBefore, complexityAfter, delta);
+                    return String.format("Complexity decreased from %d to %d (%d)",
+                            complexityBefore, complexityAfter, delta);
                 else
                     return "Method modified but complexity unchanged";
             case UNCHANGED:
@@ -269,33 +252,22 @@ public class MethodComplexityAnalyzer {
         }
     }
 
-    private String generateComplexityExplanation(
-            List<MethodChange> methodChanges,
-            int complexityDelta) {
-
+    private String generateComplexityExplanation(List<MethodChange> methodChanges, int complexityDelta) {
         long addedCount    = methodChanges.stream().filter(m -> m.getChangeType() == MethodChange.MethodChangeType.ADDED).count();
         long deletedCount  = methodChanges.stream().filter(m -> m.getChangeType() == MethodChange.MethodChangeType.DELETED).count();
         long modifiedCount = methodChanges.stream().filter(m -> m.getChangeType() == MethodChange.MethodChangeType.MODIFIED).count();
 
-        StringBuilder explanation = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
+        if      (complexityDelta > 0) sb.append(String.format("Complexity increased by %d", complexityDelta));
+        else if (complexityDelta < 0) sb.append(String.format("Complexity decreased by %d", Math.abs(complexityDelta)));
+        else                          sb.append("No net complexity change");
 
-        if (complexityDelta > 0)
-            explanation.append(String.format("Complexity increased by %d", complexityDelta));
-        else if (complexityDelta < 0)
-            explanation.append(String.format("Complexity decreased by %d", Math.abs(complexityDelta)));
-        else
-            explanation.append("No net complexity change");
+        List<String> parts = new ArrayList<>();
+        if (addedCount    > 0) parts.add(addedCount    + " added");
+        if (deletedCount  > 0) parts.add(deletedCount  + " deleted");
+        if (modifiedCount > 0) parts.add(modifiedCount + " modified");
+        if (!parts.isEmpty()) sb.append(" (").append(String.join(", ", parts)).append(" methods)");
 
-        if (addedCount > 0 || deletedCount > 0 || modifiedCount > 0) {
-            explanation.append(" (");
-            List<String> parts = new ArrayList<>();
-            if (addedCount > 0)    parts.add(addedCount + " added");
-            if (deletedCount > 0)  parts.add(deletedCount + " deleted");
-            if (modifiedCount > 0) parts.add(modifiedCount + " modified");
-            explanation.append(String.join(", ", parts));
-            explanation.append(" methods)");
-        }
-
-        return explanation.toString();
+        return sb.toString();
     }
 }

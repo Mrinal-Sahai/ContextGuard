@@ -193,7 +193,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
       </div>
 
       {/* Metrics */}
-      {showMetrics && metrics && (
+      {!showMetrics && metrics && (
         <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-4 text-sm border-b border-slate-700/30">
           <div><div className={secondary}>Nodes</div><div className={text}>{metrics.totalNodes}</div></div>
           <div><div className={secondary}>Edges</div><div className={text}>{metrics.totalEdges}</div></div>

@@ -28,17 +28,19 @@ public class DiagramService {
     private final MermaidRendererService mermaidRenderer;
     private final PRAnalysisRepository repository;
     private final AIGenerationService aiService;
+    private final LLMSequenceDiagramService llmSequenceDiagramService ;
 
     public DiagramService(
             FlowExtractorService flowExtractor,
             MermaidRendererService mermaidRenderer,
             PRAnalysisRepository repository,
-            AIGenerationService aiService) {
+            AIGenerationService aiService, LLMSequenceDiagramService llmSequenceDiagramService) {
 
         this.flowExtractor = flowExtractor;
         this.mermaidRenderer = mermaidRenderer;
         this.repository = repository;
         this.aiService = aiService;
+        this.llmSequenceDiagramService = llmSequenceDiagramService;
     }
 
     /**
@@ -64,7 +66,8 @@ public class DiagramService {
             // Step 2: Render sequence diagram
             // MermaidRendererService now generates `sequenceDiagram` (runtime flow)
             // falling back to `graph LR` only for pure internal refactors with no new edges.
-            String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
+//            String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
+            String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, provider);
             log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
 
             // Step 3: AI narrative — receives the rendered diagram so the summary

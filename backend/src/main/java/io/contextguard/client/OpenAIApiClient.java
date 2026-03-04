@@ -56,7 +56,7 @@ public class OpenAIApiClient implements AIClient {
             HttpEntity<Map<String, Object>> entity =
                     new HttpEntity<>(requestBody, headers);
 
-            System.out.println("Generating summary for prompt: " + prompt);
+//            System.out.println("Generating summary for prompt: " + prompt);
             System.out.println("OpenAI API call " + BASE_URL);
 
 
