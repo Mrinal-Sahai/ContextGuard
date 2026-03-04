@@ -1,469 +1,18 @@
 import React, { useState } from 'react';
 import { Shield, Github, Zap, AlertTriangle, FileCode, GitBranch, Clock, TrendingUp, Target, Brain, CheckCircle2, Info, Loader2, ChevronDown, ChevronRight, ExternalLink, BarChart3, Network, Sun, Moon } from 'lucide-react';
 import MermaidDiagram from './MermaidDiagram';
+import { PRAnalysisResponse,PRIntelligenceResponse} from '../types/index'
+import { formatDate} from '../services/utility';
+import { MetricCard } from './MetricCard';
+import { InfoTooltip } from './InfoTooltip';
+import { BreakdownChart} from './BreakdownChart';
+import { RiskLevelBadge } from './RiskLevelBadge';
+import { DifficultyBadge } from './DifficultyBadge';
+import { NarrativeSection} from './NarrativeSection';
+import { FileChangeItem } from './FileChangeItem';
+import { useNavigate } from "react-router-dom";
 
-// ============================================================================
-// TYPE DEFINITIONS
-// ============================================================================
 
-interface PRAnalysisRequest {
-  prUrl: string;
-  aiProvider: 'GEMINI' | 'OPENAI';
-  githubToken?: string;
-  aiToken?: string;
-}
-
-interface PRAnalysisResponse {
-  success: boolean;
-  data: {
-    analysisId: string;
-    cached: boolean;
-    message: string;
-  };
-  message: string;
-  error: string | null;
-}
-
-interface PRIntelligenceResponse {
-  analysisId: string;
-  metadata: PRMetadata;
-  metrics: DiffMetrics;
-  risk: RiskAssessment;
-  difficulty: DifficultyAssessment;
-  narrative: AIGeneratedNarrative;
-  blastRadius: BlastRadiusAssessment;
-  mermaidDiagram?: string;
-  diagramVerificationNotes?: string;
-  diagramMetrics?: DiagramMetrics;
-  analyzedAt: string;
-}
-
-interface DiagramMetrics {
-  totalNodes: number;
-  totalEdges: number;
-  maxDepth: number;
-  avgComplexity: number;
-  hotspots: string[];
-  callDistribution: Record<string, number>;
-}
-
-interface PRMetadata {
-  title: string;
-  author: string;
-  createdAt: string;
-  updatedAt: string;
-  baseBranch: string;
-  headBranch: string;
-  headSha: string;
-  baseSha: string;
-  headRepo: string;
-  baseRepo: string;
-  prUrl: string;
-  body: string;
-}
-
-interface DiffMetrics {
-  totalFilesChanged: number;
-  linesAdded: number;
-  linesDeleted: number;
-  netLinesChanged: number;
-  fileTypeDistribution: Record<string, number>;
-  complexityDelta: number;
-  criticalFiles: string[];
-  fileChanges: FileChangeSummary[];
-}
-
-interface FileChangeSummary {
-  filename: string;
-  changeType: 'added' | 'modified' | 'deleted';
-  linesAdded: number;
-  linesDeleted: number;
-  complexityDelta: number;
-  totalComplexityBefore: number;
-  totalComplexityAfter: number;
-  riskLevel: RiskLevel;
-  methodChanges: any[] | null;
-  methodSignatures: string | null;
-  beforeSnippet: string | null;
-  afterSnippet: string | null;
-  criticalDetectionResult: CriticalDetectionResult;
-  reason: string | null;
-}
-
-interface CriticalDetectionResult {
-  filename: string;
-  score: number;
-  reasons: string[];
-  isCritical: boolean;
-}
-
-interface RiskAssessment {
-  overallScore: number;
-  level: RiskLevel;
-  breakdown: RiskBreakdown;
-  criticalFilesDetected: string[];
-}
-
-interface RiskBreakdown {
-  averageRiskContribution: number;
-  peakRiskContribution: number;
-  criticalPathDensityContribution: number;
-  highRiskDensityContribution: number;
-}
-
-interface DifficultyAssessment {
-  overallScore: number;
-  level: DifficultyLevel;
-  breakdown: DifficultyBreakdown;
-  estimatedReviewMinutes: number;
-}
-
-interface DifficultyBreakdown {
-  sizeContribution: number;
-  spreadContribution: number;
-  cognitiveContribution: number;
-  contextContribution: number;
-  concentrationContribution: number;
-  criticalImpactContribution: number;
-}
-
-interface AIGeneratedNarrative {
-  overview: string;
-  structuralImpact: string;
-  behavioralChanges: string;
-  riskInterpretation: string;
-  reviewFocus: string;
-  checklist: string;
-  confidence: string;
-  generatedAt: string;
-  disclaimer: string;
-}
-
-interface BlastRadiusAssessment {
-  scope: 'LOCALIZED' | 'COMPONENT' | 'MODULE' | 'SYSTEM_WIDE';
-  affectedDirectories: number;
-  affectedModules: number;
-  impactedAreas: string[];
-  assessment: string;
-}
-
-type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-type DifficultyLevel = 'TRIVIAL' | 'EASY' | 'MODERATE' | 'HARD' | 'VERY_HARD';
-
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-const getRiskColor = (level: RiskLevel, isDark: boolean): string => {
-  const colors = {
-    LOW: isDark ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' : 'text-emerald-700 bg-emerald-100 border-emerald-300',
-    MEDIUM: isDark ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 'text-amber-700 bg-amber-100 border-amber-300',
-    HIGH: isDark ? 'text-orange-400 bg-orange-500/10 border-orange-500/20' : 'text-orange-700 bg-orange-100 border-orange-300',
-    CRITICAL: isDark ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' : 'text-rose-700 bg-rose-100 border-rose-300',
-  };
-  return colors[level];
-};
-
-const getDifficultyColor = (level: DifficultyLevel, isDark: boolean): string => {
-  const colors = {
-    TRIVIAL: isDark ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' : 'text-emerald-700 bg-emerald-100 border-emerald-300',
-    EASY: isDark ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' : 'text-cyan-700 bg-cyan-100 border-cyan-300',
-    MODERATE: isDark ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 'text-amber-700 bg-amber-100 border-amber-300',
-    HARD: isDark ? 'text-orange-400 bg-orange-500/10 border-orange-500/20' : 'text-orange-700 bg-orange-100 border-orange-300',
-    VERY_HARD: isDark ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' : 'text-rose-700 bg-rose-100 border-rose-300',
-  };
-  return colors[level];
-};
-
-const formatDate = (dateStr: string): string => {
-  return new Date(dateStr).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
-
-// ============================================================================
-// COMPONENTS
-// ============================================================================
-
-const MetricCard: React.FC<{
-  icon: React.ReactNode;
-  label: string;
-  value: string | number;
-  description?: string;
-  trend?: 'up' | 'down' | 'neutral';
-  className?: string;
-  isDarkMode: boolean;
-}> = ({ icon, label, value, description, trend, className = '', isDarkMode }) => {
-  const bgClass = isDarkMode 
-    ? 'bg-slate-800/90 border-slate-700/50 hover:border-slate-600/50' 
-    : 'bg-white border-slate-200 hover:border-slate-300';
-  
-  const textPrimary = isDarkMode ? 'text-white' : 'text-slate-900';
-  const textSecondary = isDarkMode ? 'text-slate-400' : 'text-slate-600';
-  const textTertiary = isDarkMode ? 'text-slate-500' : 'text-slate-500';
-
-  return (
-    <div className={`relative group ${className}`}>
-      <div className={`absolute inset-0 bg-gradient-to-br ${isDarkMode ? 'from-slate-700/50 to-slate-800/50' : 'from-slate-100 to-slate-200'} rounded-xl blur-xl opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
-      <div className={`relative ${bgClass} backdrop-blur-sm border rounded-xl p-5 transition-all duration-300`}>
-        <div className="flex items-start justify-between mb-3">
-          <div className={`p-2.5 bg-gradient-to-br ${isDarkMode ? 'from-indigo-500/20 to-purple-500/20 border-indigo-500/30' : 'from-indigo-100 to-purple-100 border-indigo-300'} rounded-lg border`}>
-            {icon}
-          </div>
-          {trend && (
-            <TrendingUp className={`w-4 h-4 ${trend === 'up' ? 'text-emerald-400' : 'text-rose-400'}`} />
-          )}
-        </div>
-        <div className="space-y-1">
-          <div className={`text-2xl font-bold ${textPrimary}`}>{value}</div>
-          <div className={`text-sm font-medium ${textSecondary}`}>{label}</div>
-          {description && (
-            <div className={`text-xs ${textTertiary} mt-2 pt-2 border-t ${isDarkMode ? 'border-slate-700/50' : 'border-slate-200'}`}>
-              {description}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const InfoTooltip: React.FC<{ content: string; isDarkMode: boolean }> = ({ content, isDarkMode }) => {
-  const [show, setShow] = useState(false);
-  const bgClass = isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-300';
-  const textClass = isDarkMode ? 'text-slate-300' : 'text-slate-700';
-
-  return (
-    <div className="relative inline-block ml-1.5">
-      <Info
-        className={`w-4 h-4 ${isDarkMode ? 'text-slate-500 hover:text-indigo-400' : 'text-slate-400 hover:text-indigo-600'} cursor-help transition-colors`}
-        onMouseEnter={() => setShow(true)}
-        onMouseLeave={() => setShow(false)}
-      />
-      {show && (
-        <div className={`absolute z-50 left-6 top-0 w-64 p-3 ${bgClass} border rounded-lg shadow-xl text-xs ${textClass}`}>
-          {content}
-          <div className={`absolute left-0 top-2 w-2 h-2 ${isDarkMode ? 'bg-slate-900 border-l border-t border-slate-700' : 'bg-white border-l border-t border-slate-300'} transform -translate-x-1 rotate-45`} />
-        </div>
-      )}
-    </div>
-  );
-};
-
-const RiskLevelBadge: React.FC<{ level: RiskLevel; score: number; isDarkMode: boolean }> = ({ level, score, isDarkMode }) => {
-  return (
-    <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg border ${getRiskColor(level, isDarkMode)}`}>
-      <AlertTriangle className="w-4 h-4" />
-      <span className="font-semibold text-sm">{level}</span>
-      <span className="text-xs opacity-75">({(score * 100).toFixed(1)}%)</span>
-    </div>
-  );
-};
-
-const DifficultyBadge: React.FC<{ level: DifficultyLevel; minutes: number; isDarkMode: boolean }> = ({ level, minutes, isDarkMode }) => {
-  return (
-    <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg border ${getDifficultyColor(level, isDarkMode)}`}>
-      <Clock className="w-4 h-4" />
-      <span className="font-semibold text-sm">{level.replace('_', ' ')}</span>
-      <span className="text-xs opacity-75">(~{minutes}m)</span>
-    </div>
-  );
-};
-
-const FileChangeItem: React.FC<{ file: FileChangeSummary; isDarkMode: boolean }> = ({ file, isDarkMode }) => {
-  const [expanded, setExpanded] = useState(false);
-
-  const getChangeIcon = () => {
-    if (file.changeType === 'added') return <span className="text-emerald-400">+</span>;
-    if (file.changeType === 'deleted') return <span className="text-rose-400">-</span>;
-    return <span className="text-amber-400">~</span>;
-  };
-
-  const getChangeColor = () => {
-    if (isDarkMode) {
-      if (file.changeType === 'added') return 'border-emerald-500/30 bg-emerald-500/5';
-      if (file.changeType === 'deleted') return 'border-rose-500/30 bg-rose-500/5';
-      return 'border-amber-500/30 bg-amber-500/5';
-    } else {
-      if (file.changeType === 'added') return 'border-emerald-300 bg-emerald-50';
-      if (file.changeType === 'deleted') return 'border-rose-300 bg-rose-50';
-      return 'border-amber-300 bg-amber-50';
-    }
-  };
-
-  const textPrimary = isDarkMode ? 'text-slate-200' : 'text-slate-900';
-  const textSecondary = isDarkMode ? 'text-slate-400' : 'text-slate-600';
-  const hoverBg = isDarkMode ? 'hover:bg-slate-800/30' : 'hover:bg-slate-100';
-  const borderClass = isDarkMode ? 'border-slate-700/50' : 'border-slate-200';
-
-  return (
-    <div className={`border rounded-lg overflow-hidden ${getChangeColor()}`}>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className={`w-full px-4 py-3 flex items-center justify-between ${hoverBg} transition-colors`}
-      >
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          {expanded ? <ChevronDown className={`w-4 h-4 flex-shrink-0 ${textSecondary}`} /> : <ChevronRight className={`w-4 h-4 flex-shrink-0 ${textSecondary}`} />}
-          <FileCode className={`w-4 h-4 flex-shrink-0 ${isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
-          <span className={`font-mono text-sm ${textPrimary} truncate`}>{file.filename}</span>
-          {getChangeIcon()}
-        </div>
-        <div className="flex items-center gap-4 ml-4">
-          <div className={`px-2 py-1 rounded text-xs font-medium ${getRiskColor(file.riskLevel, isDarkMode)}`}>
-            {file.riskLevel}
-          </div>
-          <div className={`flex items-center gap-2 text-xs ${textSecondary}`}>
-            <span className="text-emerald-400">+{file.linesAdded}</span>
-            <span className="text-rose-400">-{file.linesDeleted}</span>
-          </div>
-        </div>
-      </button>
-
-      {expanded && (
-        <div className={`px-4 pb-4 space-y-3 border-t ${borderClass} ${isDarkMode ? 'bg-slate-900/30' : 'bg-slate-50'}`}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3">
-            <div>
-              <div className={`text-xs ${textSecondary} mb-1`}>Complexity Δ</div>
-              <div className={`text-sm font-semibold ${textPrimary}`}>{file.complexityDelta > 0 ? '+' : ''}{file.complexityDelta}</div>
-            </div>
-            <div>
-              <div className={`text-xs ${textSecondary} mb-1`}>Before</div>
-              <div className={`text-sm font-semibold ${textPrimary}`}>{file.totalComplexityBefore}</div>
-            </div>
-            <div>
-              <div className={`text-xs ${textSecondary} mb-1`}>After</div>
-              <div className={`text-sm font-semibold ${textPrimary}`}>{file.totalComplexityAfter}</div>
-            </div>
-            <div>
-              <div className={`text-xs ${textSecondary} mb-1`}>Detection Score</div>
-              <div className={`text-sm font-semibold ${textPrimary}`}>{file.criticalDetectionResult.score}</div>
-            </div>
-          </div>
-
-          {file.criticalDetectionResult.reasons.length > 0 && (
-            <div>
-              <div className={`text-xs ${textSecondary} mb-2`}>Detection Signals</div>
-              <div className="space-y-1">
-                {file.criticalDetectionResult.reasons.map((reason, idx) => (
-                  <div key={idx} className={`text-xs ${textSecondary} flex items-start gap-2`}>
-                    <span className={isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}>•</span>
-                    <span>{reason}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const NarrativeSection: React.FC<{ narrative: AIGeneratedNarrative; isDarkMode: boolean }> = ({ narrative, isDarkMode }) => {
-  const bgClass = isDarkMode 
-    ? 'bg-gradient-to-br from-slate-800/50 to-slate-900/50 border-slate-700/50' 
-    : 'bg-gradient-to-br from-white to-slate-50 border-slate-200';
-  
-  const textPrimary = isDarkMode ? 'text-white' : 'text-slate-900';
-  const textSecondary = isDarkMode ? 'text-slate-500' : 'text-slate-600';
-  const textContent = isDarkMode ? 'text-slate-300' : 'text-slate-700';
-  const accentColor = isDarkMode ? 'text-indigo-400' : 'text-indigo-600';
-  const borderClass = isDarkMode ? 'border-slate-700/50' : 'border-slate-200';
-
-  return (
-    <div className={`${bgClass} border rounded-xl p-6 space-y-6`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className={`p-2 bg-gradient-to-br ${isDarkMode ? 'from-purple-500/20 to-pink-500/20 border-purple-500/30' : 'from-purple-100 to-pink-100 border-purple-300'} rounded-lg border`}>
-            <Brain className={`w-5 h-5 ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`} />
-          </div>
-          <div>
-            <h3 className={`text-lg font-bold ${textPrimary}`}>AI-Generated Analysis</h3>
-            <p className={`text-xs ${textSecondary}`}>Confidence: {narrative.confidence}</p>
-          </div>
-        </div>
-        <span className={`text-xs ${textSecondary}`}>{formatDate(narrative.generatedAt)}</span>
-      </div>
-
-      <div className="space-y-4">
-        <NarrativeBlock title="Overview" content={narrative.overview} accentColor={accentColor} textContent={textContent} />
-        <NarrativeBlock title="Structural Impact" content={narrative.structuralImpact} accentColor={accentColor} textContent={textContent} />
-        <NarrativeBlock title="Behavioral Changes" content={narrative.behavioralChanges} accentColor={accentColor} textContent={textContent} />
-        <NarrativeBlock title="Risk Interpretation" content={narrative.riskInterpretation} accentColor={accentColor} textContent={textContent} />
-        <NarrativeBlock title="Review Focus" content={narrative.reviewFocus} accentColor={accentColor} textContent={textContent} />
-        <NarrativeBlock title="Checklist" content={narrative.checklist} accentColor={accentColor} textContent={textContent} />
-      </div>
-
-      <div className={`pt-4 border-t ${borderClass}`}>
-        <p className={`text-xs ${textSecondary} italic`}>{narrative.disclaimer}</p>
-      </div>
-    </div>
-  );
-};
-
-const NarrativeBlock: React.FC<{ title: string; content: string; accentColor: string; textContent: string }> = ({ title, content, accentColor, textContent }) => {
-  return (
-    <div>
-      <h4 className={`text-sm font-semibold ${accentColor} mb-2`}>{title}</h4>
-      <p className={`text-sm ${textContent} leading-relaxed whitespace-pre-line`}>{content}</p>
-    </div>
-  );
-};
-
-const BreakdownChart: React.FC<{ 
-  title: string; 
-  breakdown: Record<string, number>; 
-  type: 'risk' | 'difficulty';
-  isDarkMode: boolean;
-}> = ({ title, breakdown, type, isDarkMode }) => {
-  const maxValue = Math.max(...Object.values(breakdown));
-  
-  const bgClass = isDarkMode ? 'bg-slate-800/50 border-slate-700/50' : 'bg-white border-slate-200';
-  const textPrimary = isDarkMode ? 'text-white' : 'text-slate-900';
-  const textSecondary = isDarkMode ? 'text-slate-400' : 'text-slate-600';
-  const textTertiary = isDarkMode ? 'text-slate-300' : 'text-slate-700';
-  const barBg = isDarkMode ? 'bg-slate-900' : 'bg-slate-200';
-  
-  return (
-    <div className={`${bgClass} border rounded-xl p-5`}>
-      <h4 className={`text-sm font-semibold ${textPrimary} mb-4 flex items-center gap-2`}>
-        <BarChart3 className={`w-4 h-4 ${isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
-        {title}
-      </h4>
-      <div className="space-y-3">
-        {Object.entries(breakdown).map(([key, value]) => {
-          const percentage = maxValue > 0 ? (value / maxValue) * 100 : 0;
-          const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
-          
-          return (
-            <div key={key}>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className={`text-xs ${textSecondary}`}>{label}</span>
-                <span className={`text-xs font-mono ${textTertiary}`}>{(value * 100).toFixed(1)}%</span>
-              </div>
-              <div className={`h-2 ${barBg} rounded-full overflow-hidden`}>
-                <div
-                  className={`h-full rounded-full transition-all duration-500 ${
-                    type === 'risk' ? 'bg-gradient-to-r from-rose-500 to-orange-500' : 'bg-gradient-to-r from-indigo-500 to-purple-500'
-                  }`}
-                  style={{ width: `${percentage}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
 
 const ContextGuardDashboard: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -472,11 +21,13 @@ const ContextGuardDashboard: React.FC = () => {
   const [githubToken, setGithubToken] = useState('');
   const [aiToken, setAiToken] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const navigate = useNavigate();
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisId, setAnalysisId] = useState<string | null>(null);
   const [analysisData, setAnalysisData] = useState<PRIntelligenceResponse | null>(null);
+  const API_BASE_URL= import.meta.env.VITE_API_URL ??  "http://localhost:8080/api/v1"
 
   const validatePrUrl = (url: string): boolean => {
     const pattern = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
@@ -494,7 +45,7 @@ const ContextGuardDashboard: React.FC = () => {
     setAnalysisData(null);
 
     try {
-      const analyzeResponse = await fetch('http://localhost:8080/api/v1/pr-analysis/analyze', {
+      const analyzeResponse = await fetch(`${API_BASE_URL}/pr-analysis/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -515,22 +66,8 @@ const ContextGuardDashboard: React.FC = () => {
         throw new Error(analyzeResult.error || 'Analysis failed');
       }
 
-      setAnalysisId(analyzeResult.data.analysisId);
-
-      const intelligenceResponse = await fetch(
-        `http://localhost:8080/api/v1/pr-analysis/${analyzeResult.data.analysisId}`,
-        {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-
-      if (!intelligenceResponse.ok) {
-        throw new Error(`Failed to fetch analysis: ${intelligenceResponse.statusText}`);
-      }
-
-      const intelligenceData: PRIntelligenceResponse = await intelligenceResponse.json();
-      setAnalysisData(intelligenceData);
+      const id = analyzeResult.data.analysisId;
+      navigate(`/review/${id}`);
 
     } catch (err: any) {
       setError(err.message || 'An error occurred during analysis');
@@ -539,12 +76,6 @@ const ContextGuardDashboard: React.FC = () => {
     }
   };
 
-  const handleReset = () => {
-    setPrUrl('');
-    setAnalysisId(null);
-    setAnalysisData(null);
-    setError(null);
-  };
 
   // Theme-based classes
   const bgPrimary = isDarkMode ? 'bg-slate-950' : 'bg-slate-50';
@@ -589,7 +120,7 @@ const ContextGuardDashboard: React.FC = () => {
                   <h1 className="text-3xl font-black bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
                     ContextGuard
                   </h1>
-                  <p className={`text-sm ${textSecondary} font-medium`}>Intelligent PR Risk Analysis Platform</p>
+                  <p className={`text-sm ${textSecondary} font-medium`}>Intelligent PR Review Platform</p>
                 </div>
               </div>
               
@@ -611,13 +142,6 @@ const ContextGuardDashboard: React.FC = () => {
                     </>
                   )}
                 </button>
-                
-                <div className={`px-4 py-2 ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-100'} rounded-lg border ${isDarkMode ? 'border-slate-700/50' : 'border-slate-200'}`}>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                    <span className={`text-sm font-medium ${textSecondary}`}>System Ready</span>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -822,12 +346,7 @@ const ContextGuardDashboard: React.FC = () => {
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={handleReset}
-                  className={`px-6 py-3 ${buttonBg} border rounded-lg font-semibold transition-all`}
-                >
-                  New Analysis
-                </button>
+              
               </div>
 
               {/* Key Metrics Overview */}
@@ -1032,7 +551,7 @@ const ContextGuardDashboard: React.FC = () => {
         {/* Footer */}
         <footer className={`border-t ${borderColor} mt-20`}>
           <div className="max-w-7xl mx-auto px-6 py-8">
-            <div className={`flex items-center justify-between text-sm ${textSecondary}`}>
+            <div className={`flex items-cente justify-between text-sm ${textSecondary}`}>
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4" />
                 <span>ContextGuard © 2026</span>

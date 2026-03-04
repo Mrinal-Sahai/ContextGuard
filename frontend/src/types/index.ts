@@ -6,18 +6,14 @@
  * These types ensure type safety across the frontend.
  */
 
-export interface PRIntelligenceData {
-  analysisId: string;
-  metadata: PRMetadata;
-  metrics: DiffMetrics;
-  risk: RiskAssessment;
-  narrative: AIGeneratedNarrative;
-  difficulty: DifficultyAssessment;
-  blastRadius?: BlastRadiusAssessment;
-  analyzedAt: string;
+export interface PRAnalysisRequest {
+  prUrl: string;
+  aiProvider: 'GEMINI' | 'OPENAI';
+  githubToken?: string;
+  aiToken?: string;
 }
 
-export type AnalyzePRResponse = {
+export interface PRAnalysisResponse {
   success: boolean;
   data: {
     analysisId: string;
@@ -26,8 +22,30 @@ export type AnalyzePRResponse = {
   };
   message: string;
   error: string | null;
-};
+}
 
+export interface PRIntelligenceResponse {
+  analysisId: string;
+  metadata: PRMetadata;
+  metrics: DiffMetrics;
+  risk: RiskAssessment;
+  difficulty: DifficultyAssessment;
+  narrative: AIGeneratedNarrative;
+  blastRadius: BlastRadiusAssessment;
+  mermaidDiagram?: string;
+  diagramVerificationNotes?: string;
+  diagramMetrics?: DiagramMetrics;
+  analyzedAt: string;
+}
+
+export interface DiagramMetrics {
+  totalNodes: number;
+  totalEdges: number;
+  maxDepth: number;
+  avgComplexity: number;
+  hotspots: string[];
+  callDistribution: Record<string, number>;
+}
 
 export interface PRMetadata {
   title: string;
@@ -36,7 +54,12 @@ export interface PRMetadata {
   updatedAt: string;
   baseBranch: string;
   headBranch: string;
+  headSha: string;
+  baseSha: string;
+  headRepo: string;
+  baseRepo: string;
   prUrl: string;
+  body: string;
 }
 
 export interface DiffMetrics {
@@ -52,11 +75,26 @@ export interface DiffMetrics {
 
 export interface FileChangeSummary {
   filename: string;
-  changeType: string;
+  changeType: 'added' | 'modified' | 'deleted';
   linesAdded: number;
   linesDeleted: number;
   complexityDelta: number;
-   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  totalComplexityBefore: number;
+  totalComplexityAfter: number;
+  riskLevel: RiskLevel;
+  methodChanges: any[] | null;
+  methodSignatures: string | null;
+  beforeSnippet: string | null;
+  afterSnippet: string | null;
+  criticalDetectionResult: CriticalDetectionResult;
+  reason: string | null;
+}
+
+export interface CriticalDetectionResult {
+  filename: string;
+  score: number;
+  reasons: string[];
+  isCritical: boolean;
 }
 
 export interface RiskAssessment {
@@ -66,57 +104,40 @@ export interface RiskAssessment {
   criticalFilesDetected: string[];
 }
 
-export const RiskLevel = {
-  LOW: 'LOW',
-  MEDIUM: 'MEDIUM',
-  HIGH: 'HIGH',
-  CRITICAL: 'CRITICAL',
-} as const;
-
-export type RiskLevel = typeof RiskLevel[keyof typeof RiskLevel];
-
-
 export interface RiskBreakdown {
-  volumeContribution: number;
-  complexityContribution: number;
-  criticalPathContribution: number;
-  churnContribution: number;
+  averageRiskContribution: number;
+  peakRiskContribution: number;
+  criticalPathDensityContribution: number;
+  highRiskDensityContribution: number;
+}
+
+export interface DifficultyAssessment {
+  overallScore: number;
+  level: DifficultyLevel;
+  breakdown: DifficultyBreakdown;
+  estimatedReviewMinutes: number;
+}
+
+export interface DifficultyBreakdown {
+  sizeContribution: number;
+  spreadContribution: number;
+  cognitiveContribution: number;
+  contextContribution: number;
+  concentrationContribution: number;
+  criticalImpactContribution: number;
 }
 
 export interface AIGeneratedNarrative {
   overview: string;
-  beforeBehavior?: string;
-  afterBehavior?: string;
-  keyChanges: string;
-  potentialConcerns: string;
-  confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
-  disclaimer?: string;
+  structuralImpact: string;
+  behavioralChanges: string;
+  riskInterpretation: string;
+  reviewFocus: string;
+  checklist: string;
+  confidence: string;
+  generatedAt: string;
+  disclaimer: string;
 }
-
-
-export interface DifficultyAssessment {
-  overallScore: number;
-  estimatedReviewMinutes: number;
-  level: DifficultyLevel;
-  breakdown: DifficultyBreakdown;
-}
-
-export interface DifficultyBreakdown {
-  sizeContribution: number;        // Lines changed
-  spreadContribution: number;      // Number of files
-  cognitiveContribution: number;   // Complexity delta
-  contextContribution: number;     // File type diversity
-}
-
-export const DifficultyLevel = {
-  TRIVIAL: 'TRIVIAL',
-  EASY: 'EASY',
-  MODERATE: 'MODERATE',
-  HARD: 'HARD',
-  VERY_HARD: 'VERY_HARD',
-} as const;
-
-export type DifficultyLevel = typeof DifficultyLevel[keyof typeof DifficultyLevel];
 
 export interface BlastRadiusAssessment {
   scope: 'LOCALIZED' | 'COMPONENT' | 'MODULE' | 'SYSTEM_WIDE';
@@ -125,3 +146,6 @@ export interface BlastRadiusAssessment {
   impactedAreas: string[];
   assessment: string;
 }
+
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export type DifficultyLevel = 'TRIVIAL' | 'EASY' | 'MODERATE' | 'HARD' | 'VERY_HARD';

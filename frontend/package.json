@@ -1,7 +1,7 @@
 {
   "name": "contextguard-dashboard",
   "version": "1.0.0",
-  "description": "ContextGuard - Intelligent PR Risk Analysis Platform",
+  "description": "ContextGuard - Intelligent PR Review Platform",
   "private": true,
   "dependencies": {
     "dompurify": "^3.3.1",
@@ -11,6 +11,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.13.1",
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1"
