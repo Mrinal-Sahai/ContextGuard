@@ -34,9 +34,9 @@ public class LLMSequenceDiagramService {
 
     private static final Logger log = LoggerFactory.getLogger(LLMSequenceDiagramService.class);
 
-    static final int MAX_PARTICIPANTS = 8;
-    static final int MAX_ARROWS       = 20;
-    static final int MAX_ALT_BLOCKS   = 3;
+    static final int MAX_PARTICIPANTS = 10;
+    static final int MAX_ARROWS       = 25;
+    static final int MAX_ALT_BLOCKS   = 5;
 
     private final AIRouter aiRouter;
     private final SequenceDiagramRenderer fallbackRenderer;

@@ -256,15 +256,6 @@ export default function ReviewPage() {
           />
         </div>
 
-        {/* Mermaid */}
-        {analysisData.mermaidDiagram && (
-          <MermaidDiagram
-            diagram={analysisData.mermaidDiagram}
-            verificationNotes={analysisData.diagramVerificationNotes}
-            metrics={analysisData.diagramMetrics}
-            isDarkMode={isDarkMode}
-          />
-        )}
 
         {/* Blast Radius */}
         <div className={`border rounded-xl p-6 ${cardBg}`}>
@@ -302,6 +293,16 @@ export default function ReviewPage() {
           isDarkMode={isDarkMode}
         />
 )}
+
+       {/* Mermaid */}
+        {analysisData.mermaidDiagram && (
+          <MermaidDiagram
+            diagram={analysisData.mermaidDiagram}
+            verificationNotes={analysisData.diagramVerificationNotes}
+            metrics={analysisData.diagramMetrics}
+            isDarkMode={isDarkMode}
+          />
+        )}
 
         {/* File Changes */}
         <div className={`border rounded-xl p-6 ${cardBg}`}>
