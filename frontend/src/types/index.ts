@@ -1,11 +1,5 @@
 // src/types/index.ts
 
-/**
- * Type definitions matching backend DTOs.
- * 
- * These types ensure type safety across the frontend.
- */
-
 export interface PRAnalysisRequest {
   prUrl: string;
   aiProvider: 'GEMINI' | 'OPENAI';
@@ -71,6 +65,12 @@ export interface DiffMetrics {
   complexityDelta: number;
   criticalFiles: string[];
   fileChanges: FileChangeSummary[];
+  // AST-derived fields — populated after FlowExtractorService runs
+  maxCallDepth?: number;
+  avgChangedMethodCC?: number;
+  hotspotMethodIds?: string[];
+  removedPublicMethods?: number;
+  addedPublicMethods?: number;
 }
 
 export interface FileChangeSummary {
@@ -94,14 +94,19 @@ export interface CriticalDetectionResult {
   filename: string;
   score: number;
   reasons: string[];
+  criticalityBand: CriticalityBand;
   isCritical: boolean;
 }
+
+export type CriticalityBand = 'LOW' | 'NOTABLE' | 'CRITICAL' | 'SEVERE';
 
 export interface RiskAssessment {
   overallScore: number;
   level: RiskLevel;
   breakdown: RiskBreakdown;
   criticalFilesDetected: string[];
+  reviewerGuidance?: string;
+  primaryDriver?: string;
 }
 
 export interface RiskBreakdown {
@@ -109,6 +114,14 @@ export interface RiskBreakdown {
   peakRiskContribution: number;
   criticalPathDensityContribution: number;
   highRiskDensityContribution: number;
+  complexityContribution?: number;
+  testCoverageGapContribution?: number;
+  // raw values for tooltip display only — excluded from chart bars
+  rawAverageRisk?: number;
+  rawPeakRisk?: number;
+  rawComplexityDelta?: number;
+  rawCriticalDensity?: number;
+  rawTestCoverageGap?: number;
 }
 
 export interface DifficultyAssessment {
@@ -116,6 +129,7 @@ export interface DifficultyAssessment {
   level: DifficultyLevel;
   breakdown: DifficultyBreakdown;
   estimatedReviewMinutes: number;
+  reviewerGuidance?: string;
 }
 
 export interface DifficultyBreakdown {
@@ -125,6 +139,12 @@ export interface DifficultyBreakdown {
   contextContribution: number;
   concentrationContribution: number;
   criticalImpactContribution: number;
+  // raw values for tooltip display only — excluded from chart bars
+  rawCognitiveDelta?: number;
+  rawLOC?: number;
+  rawLayerCount?: number;
+  rawDomainCount?: number;
+  rawCriticalCount?: number;
 }
 
 export interface AIGeneratedNarrative {
@@ -140,11 +160,16 @@ export interface AIGeneratedNarrative {
 }
 
 export interface BlastRadiusAssessment {
-  scope: 'LOCALIZED' | 'COMPONENT' | 'MODULE' | 'SYSTEM_WIDE';
+  scope: 'LOCALIZED' | 'COMPONENT' | 'MODULE' | 'CROSS_MODULE' | 'SYSTEM_WIDE';
   affectedDirectories: number;
   affectedModules: number;
   impactedAreas: string[];
   assessment: string;
+  affectedModuleNames?: string[];
+  affectedLayers?: string[];
+  affectedLayerCount?: number;
+  affectedDomains?: string[];
+  reviewerGuidance?: string;
 }
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';

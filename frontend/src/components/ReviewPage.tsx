@@ -1,6 +1,10 @@
 import { useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { MetricCard } from "./MetricCard";
+import { ASTMetricsPanel } from "./ASTMetricsPanel";
+import { useRef } from "react";
+import html2canvas from "html2canvas-pro";
+import jsPDF from "jspdf";
 import {
   Shield,
   Github,
@@ -32,6 +36,7 @@ const API_BASE_URL =
 
 export default function ReviewPage() {
   const { analysisId } = useParams();
+  const reportRef = useRef<HTMLDivElement>(null);
 
   const [analysisData, setAnalysisData] =
     useState<PRIntelligenceResponse | null>(null);
@@ -95,6 +100,48 @@ export default function ReviewPage() {
     return () => controller.abort();
   }, [analysisId]);
 
+
+const generatePDF = async () => {
+  console.log("PDF generation started");
+
+  if (!reportRef.current) return;
+
+  const element = reportRef.current;
+
+  const canvas = await html2canvas(element, {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: "#ffffff",
+    ignoreElements: (el) => {
+      return el.classList?.contains("no-print");
+    }
+  });
+
+  const imgData = canvas.toDataURL("image/png");
+
+  const pdf = new jsPDF("p", "mm", "a4");
+
+  const imgWidth = 210;
+  const pageHeight = 295;
+
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+  let heightLeft = imgHeight;
+  let position = 0;
+
+  pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+
+  while (heightLeft > 0) {
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+
+  pdf.save(`review-report-${analysisId}.pdf`);
+};
+
   if (loading)
     return (
       <div className={`flex items-center justify-center min-h-screen text-lg ${bgPage}`}>
@@ -111,6 +158,7 @@ export default function ReviewPage() {
 
   return (
     <div className={`${bgPage} min-h-screen`}>
+       <div ref={reportRef}>
       <div className="max-w-7xl mx-auto px-6 py-10 space-y-10">
 
         {/* Header */}
@@ -160,6 +208,7 @@ export default function ReviewPage() {
           </div>
 
           {/* THEME TOGGLE */}
+          <div className="flex items-center gap-3">
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${borderColor} ${textPrimary}`}
@@ -167,6 +216,13 @@ export default function ReviewPage() {
             {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
             {isDarkMode ? "Light" : "Dark"}
           </button>
+          <button
+            onClick={generatePDF}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700`}
+          >
+            Save Review Report
+          </button>
+        </div>
         </div>
 
         {/* Key Metrics */}
@@ -287,6 +343,10 @@ export default function ReviewPage() {
           </div>
         </div>
 
+        {<ASTMetricsPanel metrics={analysisData.metrics} isDarkMode={isDarkMode}/>}
+
+
+
 {analysisData.narrative && (
         <NarrativeSection
           narrative={analysisData.narrative}
@@ -374,6 +434,7 @@ export default function ReviewPage() {
           </div>
         </footer>
       </div>
+    </div>
     </div>
   );
 }

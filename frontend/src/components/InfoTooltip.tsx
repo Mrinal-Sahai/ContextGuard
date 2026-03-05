@@ -1,10 +1,16 @@
 import { useState } from "react";
 import { Info } from "lucide-react";
 
-export const InfoTooltip: React.FC<{ content: string; isDarkMode: boolean }> = ({ content, isDarkMode }) => {
+export const InfoTooltip: React.FC<{
+  content: string;
+  isDarkMode: boolean;
+  paper?: string;
+}> = ({ content, isDarkMode, paper }) => {
   const [show, setShow] = useState(false);
-  const bgClass = isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-300';
+
+  const bgClass   = isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-300';
   const textClass = isDarkMode ? 'text-slate-300' : 'text-slate-700';
+  const paperClass = isDarkMode ? 'text-slate-500 border-slate-700' : 'text-slate-400 border-slate-200';
 
   return (
     <div className="relative inline-block ml-1.5">
@@ -14,8 +20,11 @@ export const InfoTooltip: React.FC<{ content: string; isDarkMode: boolean }> = (
         onMouseLeave={() => setShow(false)}
       />
       {show && (
-        <div className={`absolute z-50 left-6 top-0 w-64 p-3 ${bgClass} border rounded-lg shadow-xl text-xs ${textClass}`}>
-          {content}
+        <div className={`absolute z-50 left-6 top-0 w-72 p-3 ${bgClass} border rounded-lg shadow-xl text-xs ${textClass}`}>
+          <p className="leading-relaxed">{content}</p>
+          {paper && (
+            <p className={`mt-2 pt-2 border-t ${paperClass} italic`}>{paper}</p>
+          )}
           <div className={`absolute left-0 top-2 w-2 h-2 ${isDarkMode ? 'bg-slate-900 border-l border-t border-slate-700' : 'bg-white border-l border-t border-slate-300'} transform -translate-x-1 rotate-45`} />
         </div>
       )}

@@ -269,8 +269,8 @@ public class DifficultyScoringEngine {
                 level,
                 (int) prodFileCount,
                 (int) testFileCount,
-                totalLOC,
-                totalCognitiveDelta,
+                metrics.getLinesAdded(),
+                Math.min(totalCognitiveDelta, 200),
                 structuralCount
         );
 
@@ -320,7 +320,7 @@ public class DifficultyScoringEngine {
             DifficultyLevel level,
             int prodFiles,
             int testFiles,
-            int totalLOC,
+            int linesAdded,
             int cognitiveDelta,
             int structuralChanges) {
 
@@ -334,7 +334,7 @@ public class DifficultyScoringEngine {
         //    BUT: ~30% of lines get deep attention (the rest is context/boilerplate)
         //    Effective: 5 × 0.30 = 1.5 min/100 LOC. Adjusted down to 1.2 for
         //    skimmable boilerplate (getters, imports, closing braces).
-        double readTime = (totalLOC / 100.0) * 1.2;
+        double readTime = (linesAdded / 100.0) * 1.2;
 
         // 3. COMPLEXITY THINK TIME
         //    Each cognitive complexity unit = one branching path to mentally trace.
