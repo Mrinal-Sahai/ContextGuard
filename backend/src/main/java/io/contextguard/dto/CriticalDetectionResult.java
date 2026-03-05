@@ -1,5 +1,6 @@
 package io.contextguard.dto;
 
+import io.contextguard.service.criticalpath.CriticalPathDetector;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -20,4 +21,7 @@ public class CriticalDetectionResult {
     private int score;
     private List<String> reasons;     // explicit list of signals that contributed
     private boolean isCritical;       // score >= threshold
+    private CriticalityBand criticalityBand;
 }
+
+

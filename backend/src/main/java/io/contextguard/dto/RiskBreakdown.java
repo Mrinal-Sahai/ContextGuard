@@ -14,4 +14,14 @@ public class RiskBreakdown {
     private double peakRiskContribution;
     private double criticalPathDensityContribution;
     private double highRiskDensityContribution;
+    private double complexityContribution;
+    private double testCoverageGapContribution;
+    private double rawAverageRisk;
+    private double rawPeakRisk;
+    private double rawComplexityDelta;
+    private double rawCriticalDensity;
+    private double rawTestCoverageGap;
+
+
+
 }

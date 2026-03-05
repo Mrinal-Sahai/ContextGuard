@@ -3,6 +3,7 @@ package io.contextguard.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.contextguard.exception.AIServiceException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
@@ -11,6 +12,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.Map;
 
+@Slf4j
 @Component("openAIClient")
 public class OpenAIApiClient implements AIClient {
 
@@ -56,8 +58,9 @@ public class OpenAIApiClient implements AIClient {
             HttpEntity<Map<String, Object>> entity =
                     new HttpEntity<>(requestBody, headers);
 
-//            System.out.println("Generating summary for prompt: " + prompt);
-            System.out.println("OpenAI API call " + BASE_URL);
+            log.info("OpenAI API call " + BASE_URL);
+            log.info("Generating summary for prompt: \n {}", prompt);
+
 
 
             ResponseEntity<String> response = restTemplate.exchange(

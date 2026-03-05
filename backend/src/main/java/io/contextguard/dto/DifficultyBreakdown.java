@@ -16,4 +16,9 @@ public class DifficultyBreakdown {
     private double contextContribution;     // File type diversity
     private double concentrationContribution; // High/CRITICAL files
     private double criticalImpactContribution; // Critical files
+    private double rawCognitiveDelta;
+    private double rawLOC;
+    private double rawLayerCount;
+    private double rawDomainCount;
+    private double rawCriticalCount;
 }

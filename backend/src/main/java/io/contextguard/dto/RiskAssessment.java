@@ -17,5 +17,6 @@ public class RiskAssessment {
     private RiskLevel level; // LOW/MEDIUM/HIGH/CRITICAL
     private RiskBreakdown breakdown;
     private List<String> criticalFilesDetected;
+    private String reviewerGuidance;
 }
 

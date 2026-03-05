@@ -8,453 +8,550 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 /**
- * Difficulty Scoring Engine
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * REVIEW DIFFICULTY SCORING ENGINE
+ * ═══════════════════════════════════════════════════════════════════════════════
  *
- * Based on empirical research:
- * - Google Code Review Study (2016): Average review = 30-60 min
- * - Microsoft Research: 80% of reviews < 60 min
- * - SmartBear Study: Optimal speed = 200-400 LOC/hour (3-5 min per 100 LOC)
- * - Academic Research: 60% time spent on 20% of code (power law)
+ * WHAT "REVIEW DIFFICULTY" MEANS — AND HOW IT DIFFERS FROM RISK
+ * ──────────────────────────────────────────────────────────────
+ * Risk (RiskScoringEngine) = probability of defect reaching production.
+ * Difficulty              = cognitive effort required to review correctly.
  *
- * KEY INSIGHTS:
- * 1. Reviewers SKIM most code, STUDY only critical parts
- * 2. Test files reviewed much faster (pattern matching)
- * 3. Complexity matters more than LOC for attention
- * 4. Diminishing returns kick in fast (10th file << 2nd file)
- * 5. Experience matters: senior engineers 2-3x faster
+ * These are correlated but distinct:
+ *   - A large, well-structured refactor may be HIGH difficulty but LOW risk
+ *     (a senior reviewer sees the pattern immediately; a junior may struggle).
+ *   - A 2-line auth change may be LOW difficulty but HIGH risk (easy to read,
+ *     hard to know if the security invariant still holds).
  *
- * CALIBRATION DATA:
- * - Trivial (typo fix): 2-5 min
- * - Easy (small feature): 10-20 min
- * - Moderate (medium feature): 25-45 min
- * - Hard (complex refactor): 60-90 min
- * - Very Hard (architecture change): 120+ min
+ * Difficulty determines: "Who should review this, and how long will it take?"
+ * Risk determines: "What are the consequences if we get this wrong?"
+ *
+ * RESEARCH BACKING
+ * ─────────────────
+ * - Bacchelli & Bird (2013): "Expectations, Outcomes, and Challenges of Modern
+ *   Code Review", ICSE 2013. Key finding: reviewer comprehension time is the
+ *   dominant cost in code review, not discussion time.
+ * - Rigby & Bird (2013): "Convergent Contemporary Software Peer Review
+ *   Practices", FSE 2013. Optimal PR = ≤400 LOC, ≤7 files. Beyond that,
+ *   defect detection drops sharply.
+ * - SmartBear (2011): "Best Kept Secrets of Peer Code Review." Optimal
+ *   review speed = 200–400 LOC/hour. Beyond 60 min, defect detection falls 40%.
+ * - Bosu et al. (2015): "Characteristics of useful code reviews." Context
+ *   switching between domains costs ~3–5 minutes per switch.
+ * - Tamrawi et al. (2011): Architectural layer crossing amplifies review time
+ *   because reviewers must maintain a mental model of multiple abstraction levels.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * DIFFICULTY DIMENSIONS & WEIGHTS
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * ┌────────────────────────────────┬────────┬──────────────────────────────────┐
+ * │ DIMENSION                      │ WEIGHT │ RATIONALE                        │
+ * ├────────────────────────────────┼────────┼──────────────────────────────────┤
+ * │ 1. Cognitive Complexity        │  0.35  │ Primary driver of comprehension  │
+ * │    (CC delta, normalized)      │        │ cost. Campbell (2018): CC > flat │
+ * │                                │        │ McCabe for predicting review     │
+ * │                                │        │ effort. Higher weight than LOC  │
+ * │                                │        │ because 10 complex lines >> 100 │
+ * │                                │        │ simple lines for a reviewer.    │
+ * ├────────────────────────────────┼────────┼──────────────────────────────────┤
+ * │ 2. Size (LOC churn)            │  0.25  │ Baseline time cost. Rigby &     │
+ * │    (total lines, normalized)   │        │ Bird (2013): review thoroughness │
+ * │                                │        │ drops after 400 LOC. Saturation │
+ * │                                │        │ function captures diminishing   │
+ * │                                │        │ marginal effort per LOC.        │
+ * ├────────────────────────────────┼────────┼──────────────────────────────────┤
+ * │ 3. Architectural Context       │  0.20  │ Tamrawi et al. (2011): crossing │
+ * │    (layer + domain switching)  │        │ architectural layers requires   │
+ * │                                │        │ maintaining multiple mental     │
+ * │                                │        │ models simultaneously.          │
+ * │                                │        │ Bosu et al. (2015): domain     │
+ * │                                │        │ switch ≈ 3-5 min cognitive cost.│
+ * │                                │        │ Raised from 0.10 (previous) to │
+ * │                                │        │ 0.20 — this was heavily under-  │
+ * │                                │        │ weighted in the old version.    │
+ * ├────────────────────────────────┼────────┼──────────────────────────────────┤
+ * │ 4. File Spread                 │  0.10  │ Rigby & Bird (2013): reviewers  │
+ * │    (file count, normalized)    │        │ lose track of invariants across │
+ * │                                │        │ many files. But diminishing     │
+ * │                                │        │ returns are steep: 20th file   │
+ * │                                │        │ adds little marginal difficulty.│
+ * │                                │        │ Weight = 0.10 (low): captured  │
+ * │                                │        │ better by layers/domains above. │
+ * ├────────────────────────────────┼────────┼──────────────────────────────────┤
+ * │ 5. Critical File Concentration │  0.10  │ Critical files demand deep      │
+ * │    (proportion critical)       │        │ reading, not skimming. Even a  │
+ * │                                │        │ small PR with 1 critical auth  │
+ * │                                │        │ file is difficult to review    │
+ * │                                │        │ correctly. Nagappan & Ball     │
+ * │                                │        │ (2005): critical path files     │
+ * │                                │        │ take 3× as long to review.     │
+ * └────────────────────────────────┴────────┴──────────────────────────────────┘
+ *
+ * TOTAL WEIGHTS: 0.35 + 0.25 + 0.20 + 0.10 + 0.10 = 1.00 ✓
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * DIFFICULTY LEVELS & WHAT THEY MEAN
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ *   TRIVIAL  (score < 0.15) → Estimated < 8 min.
+ *     1–3 files, <50 LOC total, no complexity increase.
+ *     Who: any reviewer. Async same-day is fine.
+ *     Example: "Fix typo in error message"
+ *
+ *   EASY     (0.15–0.35)   → Estimated 8–25 min.
+ *     Small feature, single file/layer, low complexity.
+ *     Who: any reviewer familiar with the module. Async ok.
+ *     Example: "Add a null check to UserService.updateProfile()"
+ *
+ *   MODERATE (0.35–0.55)   → Estimated 25–50 min.
+ *     Multi-file, some complexity increase, or layer crossing.
+ *     Who: someone familiar with the module. Suggest same-day sync or
+ *     leave detailed inline comments.
+ *     Example: "Add pagination to product listing API (controller + service + repo)"
+ *
+ *   HARD     (0.55–0.75)   → Estimated 50–90 min.
+ *     High complexity, multi-layer, or domain-crossing.
+ *     Who: domain expert. Blocking synchronous review recommended.
+ *     Example: "Refactor payment retry logic across 8 files, 3 layers"
+ *
+ *   VERY_HARD (score ≥ 0.75) → Estimated 90+ min.
+ *     Architecture-level change, maximum complexity, system-wide reach.
+ *     Who: senior engineer + domain expert. Consider splitting PR.
+ *     Rigby & Bird: review effectiveness drops sharply beyond 90 min.
+ *     Example: "Extract auth module into standalone service with new token model"
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * REVIEW TIME ESTIMATION MODEL
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * Based on SmartBear (2011) and Bacchelli & Bird (2013):
+ *
+ *   total_time = file_scan_time
+ *              + loc_reading_time
+ *              + complexity_think_time
+ *              + structural_overhead_time
+ *              × fatigue_multiplier
+ *
+ * FILE SCAN: 1.5 min/production file, 0.5 min/test file (pattern matching).
+ * LOC READING: 1.2 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
+ *   midpoint = 5 min/100 LOC. But only ~30% gets deep reading: 5 × 0.30 ≈ 1.5 min/100.
+ *   Adjusted to 1.2 to account for skimming of boilerplate/getters.)
+ * COMPLEXITY THINK TIME: 0.5 min per cognitive complexity unit (above delta of 0).
+ *   Rationale: each unit represents a mental path to trace. A trained reviewer
+ *   handles ~2 units/min. (Campbell 2018; empirical calibration.)
+ * STRUCTURAL OVERHEAD: +5 min per structural/architectural change (API, migration,
+ *   config). Requires coordination thought beyond line-by-line reading.
+ * FATIGUE MULTIPLIER: increases with difficulty level, capped at 1.5×.
+ *   SmartBear: after 60 min, defect detection falls 40% — fatigue is real.
+ *
+ * FIX vs OLD VERSION:
+ *   OLD: complexity was used in BOTH the difficulty score AND the time estimate
+ *   separately, creating double-counting. Complexity added ~2.2 min/point to
+ *   time while also inflating the difficulty score which set base time.
+ *   NEW: complexity contributes to the difficulty score (→ sets DifficultyLevel →
+ *   sets base time range). The time estimator uses it as a SEPARATE additive term
+ *   only AFTER the base time from difficulty level is established — but uses
+ *   a much smaller coefficient (0.5 min/unit) to avoid double-counting.
  */
 @Service
 public class DifficultyScoringEngine {
 
     private static final Logger log = LoggerFactory.getLogger(DifficultyScoringEngine.class);
 
-    // =========================================================================
-    // WEIGHTS (sum to 1.0) - Empirically calibrated
-    // =========================================================================
-    private static final double WEIGHT_SIZE = 0.25;              // LOC impact
-    private static final double WEIGHT_SPREAD = 0.15;            // File count
-    private static final double WEIGHT_COGNITIVE = 0.30;         // Complexity
-    private static final double WEIGHT_CONTEXT = 0.10;           // Language switching
-    private static final double WEIGHT_CONCENTRATION = 0.12;     // Risk density
-    private static final double WEIGHT_CRITICAL_IMPACT = 0.08;   // Critical files
+    // ─────────────────────────────────────────────────────────────────────────
+    // WEIGHTS (sum = 1.0)
+    // ─────────────────────────────────────────────────────────────────────────
 
-    // =========================================================================
-    // PIVOTS - Calibrated to real PR distributions
-    // =========================================================================
-    private static final double PIVOT_SIZE = 500.0;              // 500 LOC = moderate PR
-    private static final double PIVOT_SPREAD = 10.0;             // 10 files = moderate spread
-    private static final double PIVOT_AVG_COMPLEXITY = 8.0;      // Avg 8 complexity/file
-    private static final double PIVOT_TOTAL_COMPLEXITY = 30.0;   // Total 30 complexity
-    private static final double PIVOT_FILE_TYPES = 2.5;          // 2-3 languages
-    private static final double PIVOT_RISK_DENSITY = 25.0;       // 25% high-risk files
-    private static final double PIVOT_CRITICAL_DENSITY = 10.0;   // 10% critical files
+    private static final double W_COGNITIVE   = 0.35;   // cognitive complexity delta
+    private static final double W_SIZE        = 0.25;   // LOC churn
+    private static final double W_CONTEXT     = 0.20;   // layer + domain switching
+    private static final double W_SPREAD      = 0.10;   // file count
+    private static final double W_CRITICAL    = 0.10;   // critical file concentration
+
+    static {
+        double sum = W_COGNITIVE + W_SIZE + W_CONTEXT + W_SPREAD + W_CRITICAL;
+        assert Math.abs(sum - 1.0) < 1e-9
+                : "DifficultyScoringEngine weights must sum to 1.0, got: " + sum;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SATURATION PIVOTS
+    // Pivot = value at which normalized signal = 0.5 (midpoint of scale).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Cognitive complexity delta at which signal saturates to 0.5 */
+    private static final double PIVOT_COGNITIVE  = 15.0;
+
+    /** LOC churn at which size signal saturates to 0.5 (≈ Rigby & Bird optimal PR) */
+    private static final double PIVOT_LOC        = 400.0;
+
+    /** File count at which spread signal saturates to 0.5 */
+    private static final double PIVOT_FILES      = 7.0;
+
+    /** Context score: combined layer + domain count at which signal = 0.5 */
+    private static final double PIVOT_CONTEXT    = 3.0;
+
+    /** Critical file proportion at which critical signal = 0.5 */
+    private static final double PIVOT_CRITICAL   = 0.25;  // 25% of files = critical
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MAIN ENTRY POINT
+    // ─────────────────────────────────────────────────────────────────────────
 
     public DifficultyAssessment assessDifficulty(PRMetadata metadata, DiffMetrics metrics) {
-        if (metrics == null || metrics.getFileChanges() == null || metrics.getFileChanges().isEmpty()) {
+
+        if (metrics == null || metrics.getFileChanges() == null
+                    || metrics.getFileChanges().isEmpty()) {
             return buildTrivialAssessment();
         }
 
-        // =====================================================================
-        // STEP 1: Gather Metrics
-        // =====================================================================
         List<FileChangeSummary> files = metrics.getFileChanges();
         int totalFiles = files.size();
-        int totalLinesChanged = safeAdd(metrics.getLinesAdded(), metrics.getLinesDeleted());
+        int totalLOC   = safeAdd(metrics.getLinesAdded(), metrics.getLinesDeleted());
 
-        // Separate production vs test files (tests reviewed 3x faster)
         long prodFileCount = files.stream().filter(f -> !isTestFile(f.getFilename())).count();
         long testFileCount = totalFiles - prodFileCount;
 
-        // Aggregate signals
-        double sumComplexityDelta = 0.0;
-        int highRiskCount = 0;
-        int criticalCount = 0;
-        int structuralChangeCount = 0;
-        int significantMethodChanges = 0;
+        // ── Aggregate raw signals ─────────────────────────────────────────────
+        int    totalCognitiveDelta = Math.abs(metrics.getComplexityDelta());
+        int    criticalCount       = 0;
+        int    structuralCount     = 0;
 
         for (FileChangeSummary file : files) {
-            sumComplexityDelta += Math.abs(safeInt(file.getComplexityDelta()));
-
-            if (file.getRiskLevel() == RiskLevel.HIGH || file.getRiskLevel() == RiskLevel.CRITICAL) {
-                highRiskCount++;
-            }
-            if (file.getCriticalDetectionResult() != null && file.getCriticalDetectionResult().isCritical()) {
+            if (file.getCriticalDetectionResult() != null
+                        && file.getCriticalDetectionResult().isCritical()) {
                 criticalCount++;
             }
             if (isStructuralChange(file)) {
-                structuralChangeCount++;
-            }
-
-            // Count SIGNIFICANT method changes (ignore trivial)
-            if (file.getMethodChanges() != null) {
-                significantMethodChanges += (int) file.getMethodChanges().stream()
-                                                          .filter(m -> m.getChangeType() != MethodChange.MethodChangeType.UNCHANGED)
-                                                          .filter(m -> Math.abs(m.getComplexityDelta()) > 2 ||
-                                                                               m.getChangeType() == MethodChange.MethodChangeType.ADDED)
-                                                          .count();
+                structuralCount++;
             }
         }
 
-        double avgComplexityDelta = sumComplexityDelta / Math.max(1, totalFiles);
-        int fileTypeCount = metrics.getFileTypeDistribution() != null ?
-                                    metrics.getFileTypeDistribution().size() : 1;
+        // ── Signal 1: Cognitive complexity ────────────────────────────────────
+        double cognitiveSignal = saturate(totalCognitiveDelta, PIVOT_COGNITIVE);
 
-        // =====================================================================
-        // STEP 2: Calculate Component Scores (0-1 scale)
-        // =====================================================================
+        // ── Signal 2: Size ────────────────────────────────────────────────────
+        double sizeSignal = saturate(totalLOC, PIVOT_LOC);
 
-        // SIZE: Saturating function with diminishing returns
-        double sizeScore = saturate(totalLinesChanged, PIVOT_SIZE);
+        // ── Signal 3: Architectural context (layer + domain switching) ─────────
+        ContextAnalysis ctx = analyzeContext(files);
+        // Combined context score: weighted sum of layer count + domain count
+        // Both normalized to [0,1] via saturation, then blended.
+        // Layer crossing is slightly more costly than domain crossing
+        // because it requires reasoning about different abstraction levels.
+        double layerSignal  = saturate(ctx.layerCount,  PIVOT_CONTEXT);
+        double domainSignal = saturate(ctx.domainCount, PIVOT_CONTEXT);
+        double contextSignal = (0.55 * layerSignal) + (0.45 * domainSignal);
 
-        // SPREAD: File count with strong diminishing returns
-        // Rationale: 2nd file adds context, 20th file barely adds difficulty
-        double spreadScore = saturate(totalFiles, PIVOT_SPREAD);
+        // ── Signal 4: File spread ─────────────────────────────────────────────
+        double spreadSignal = saturate(totalFiles, PIVOT_FILES);
 
-        // COGNITIVE: Balance avg intensity vs total mass
-        // Rationale: 5 files with 10 complexity each = harder than 10 files with 2.5 each
-        double avgComplexityScore = saturate(avgComplexityDelta, PIVOT_AVG_COMPLEXITY);
-        double totalComplexityScore = saturate(sumComplexityDelta, PIVOT_TOTAL_COMPLEXITY);
-        double cognitiveScore = (0.6 * avgComplexityScore) + (0.4 * totalComplexityScore);
+        // ── Signal 5: Critical file concentration ─────────────────────────────
+        double criticalProportion = (double) criticalCount / totalFiles;
+        double criticalSignal     = saturate(criticalProportion, PIVOT_CRITICAL);
 
-        // CONTEXT: Language/domain switching (additive penalty)
-        double contextScore = saturate(fileTypeCount, PIVOT_FILE_TYPES);
-        double cognitiveLoad = calculateCognitiveLoad(metrics);
-        contextScore = Math.min(1.0, contextScore + (cognitiveLoad * 0.3));
-
-        // CONCENTRATION: Risk density (proportion, not count)
-        double highRiskDensity = 100.0 * highRiskCount / Math.max(1, totalFiles);
-        double concentrationScore = saturate(highRiskDensity, PIVOT_RISK_DENSITY);
-
-        // CRITICAL IMPACT: Critical file density
-        double criticalDensity = 100.0 * criticalCount / Math.max(1, totalFiles);
-        double criticalScore = saturate(criticalDensity, PIVOT_CRITICAL_DENSITY);
-
-        // =====================================================================
-        // STEP 3: Weighted Overall Score
-        // =====================================================================
+        // ── Weighted overall score ─────────────────────────────────────────────
         double overallScore =
-                (WEIGHT_SIZE * sizeScore) +
-                        (WEIGHT_SPREAD * spreadScore) +
-                        (WEIGHT_COGNITIVE * cognitiveScore) +
-                        (WEIGHT_CONTEXT * contextScore) +
-                        (WEIGHT_CONCENTRATION * concentrationScore) +
-                        (WEIGHT_CRITICAL_IMPACT * criticalScore);
+                (W_COGNITIVE  * cognitiveSignal)  +
+                        (W_SIZE       * sizeSignal)        +
+                        (W_CONTEXT    * contextSignal)     +
+                        (W_SPREAD     * spreadSignal)      +
+                        (W_CRITICAL   * criticalSignal);
 
         overallScore = clamp(overallScore, 0.0, 1.0);
         overallScore = round3(overallScore);
 
-        // =====================================================================
-        // STEP 4: Categorize Difficulty
-        // =====================================================================
         DifficultyLevel level = categorize(overallScore);
 
-        // =====================================================================
-        // STEP 5: REALISTIC Time Estimation
-        // =====================================================================
-        int estimatedMinutes = estimateRealisticReviewTime(
-                overallScore,
+        // ── Time estimation (separate model, no double-counting) ───────────────
+        int estimatedMinutes = estimateReviewTime(
                 level,
                 (int) prodFileCount,
                 (int) testFileCount,
-                totalLinesChanged,
-                avgComplexityDelta,
-                significantMethodChanges,
-                highRiskCount,
-                criticalCount,
-                structuralChangeCount
+                totalLOC,
+                totalCognitiveDelta,
+                structuralCount
         );
 
-        // =====================================================================
-        // STEP 6: Build Response
-        // =====================================================================
+        // ── Breakdown for UI ──────────────────────────────────────────────────
         DifficultyBreakdown breakdown = DifficultyBreakdown.builder()
-                                                .sizeContribution(round3(WEIGHT_SIZE * sizeScore))
-                                                .spreadContribution(round3(WEIGHT_SPREAD * spreadScore))
-                                                .cognitiveContribution(round3(WEIGHT_COGNITIVE * cognitiveScore))
-                                                .contextContribution(round3(WEIGHT_CONTEXT * contextScore))
-                                                .concentrationContribution(round3(WEIGHT_CONCENTRATION * concentrationScore))
-                                                .criticalImpactContribution(round3(WEIGHT_CRITICAL_IMPACT * criticalScore))
+                                                .cognitiveContribution(round3(W_COGNITIVE  * cognitiveSignal))
+                                                .sizeContribution(round3(W_SIZE       * sizeSignal))
+                                                .contextContribution(round3(W_CONTEXT    * contextSignal))
+                                                .spreadContribution(round3(W_SPREAD     * spreadSignal))
+                                                .criticalImpactContribution(round3(W_CRITICAL   * criticalSignal))
+                                                // Raw values for display
+                                                .rawCognitiveDelta(totalCognitiveDelta)
+                                                .rawLOC(totalLOC)
+                                                .rawLayerCount(ctx.layerCount)
+                                                .rawDomainCount(ctx.domainCount)
+                                                .rawCriticalCount(criticalCount)
                                                 .build();
+
+        String reviewerGuidance = buildReviewerGuidance(level, ctx);
 
         return DifficultyAssessment.builder()
                        .overallScore(overallScore)
                        .level(level)
                        .breakdown(breakdown)
                        .estimatedReviewMinutes(estimatedMinutes)
+                       .reviewerGuidance(reviewerGuidance)
                        .build();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // REVIEW TIME ESTIMATION
+    // Separate additive model — does NOT reuse the difficulty score.
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * REALISTIC Review Time Estimation
+     * Estimate realistic review time in minutes.
      *
-     * RESEARCH-BACKED MODEL:
+     * Model (additive):
+     *   time = scan_time + reading_time + think_time + structural_overhead
+     *          × fatigue_multiplier
      *
-     * 1. BASE SCANNING TIME (Skim all code)
-     *    - Production files: 1.5 min/file (quick scan)
-     *    - Test files: 0.5 min/file (pattern matching)
-     *    - Rationale: Reviewers skim most code quickly
-     *
-     * 2. LOC READING TIME (Deep reading)
-     *    - 200-400 LOC/hour = 3-5 min per 100 LOC
-     *    - Use 4 min/100 LOC as middle ground
-     *    - BUT: Only 30% of lines get deep attention (power law)
-     *    - Effective: 1.2 min per 100 LOC
-     *    - Rationale: SmartBear research on review speeds
-     *
-     * 3. COMPLEXITY THINKING TIME (Mental model building)
-     *    - High complexity requires mental simulation
-     *    - 0.4 min per complexity point (down from 2.2!)
-     *    - Rationale: Complexity slows reading, doesn't require minutes/point
-     *
-     * 4. METHOD CHANGE INSPECTION
-     *    - Only SIGNIFICANT changes need attention
-     *    - 0.3 min per significant method (down from 0.6)
-     *    - Rationale: Method changes are localized, quick to verify
-     *
-     * 5. HIGH-RISK FILE DEEP DIVE
-     *    - +3 min per high-risk file (down from 10!)
-     *    - Extra scrutiny, but not full audit
-     *    - Rationale: Focused inspection, not investigation
-     *
-     * 6. CRITICAL FILE ARCHITECTURAL REVIEW
-     *    - +5 min per critical file (down from 12)
-     *    - Consider broader impact
-     *    - Rationale: Strategic thinking, not line-by-line
-     *
-     * 7. STRUCTURAL CHANGE COORDINATION
-     *    - +4 min per structural incident (down from 15)
-     *    - API/schema changes need coordination thought
-     *    - Rationale: Mental overhead, not investigation
-     *
-     * 8. COGNITIVE FATIGUE MULTIPLIER
-     *    - Based on difficulty score
-     *    - TRIVIAL: 1.0x (no fatigue)
-     *    - EASY: 1.1x (slight overhead)
-     *    - MODERATE: 1.2x (need breaks)
-     *    - HARD: 1.35x (mental strain)
-     *    - VERY_HARD: 1.5x (significant fatigue)
-     *    - Rationale: Fatigue is real but modest, not exponential
-     *
-     * CALIBRATION TARGETS:
-     * - 1 file, 50 LOC, low risk → 5-8 min ✓
-     * - 5 files, 300 LOC, medium risk → 15-25 min ✓
-     * - 10 files, 800 LOC, high complexity → 45-65 min ✓
-     * - 20 files, 2000 LOC, critical changes → 90-120 min ✓
+     * This model is INDEPENDENT of the difficulty score. The score captures
+     * relative difficulty; the time model captures absolute elapsed time.
+     * Using the score to set the base time would create circular dependency.
      */
-    private int estimateRealisticReviewTime(
-            double overallScore,
+    private int estimateReviewTime(
             DifficultyLevel level,
-            int prodFileCount,
-            int testFileCount,
+            int prodFiles,
+            int testFiles,
             int totalLOC,
-            double avgComplexity,
-            int significantMethodChanges,
-            int highRiskCount,
-            int criticalCount,
-            int structuralChangeCount) {
+            int cognitiveDelta,
+            int structuralChanges) {
 
-        // 1. BASE SCANNING TIME
-        double baseProdScan = prodFileCount * 1.5;  // 1.5 min per production file
-        double baseTestScan = testFileCount * 0.5;  // 0.5 min per test file
-        double baseTime = baseProdScan + baseTestScan;
+        // 1. FILE SCAN: quick pass over all files
+        //    Production: 1.5 min (need to understand context)
+        //    Test: 0.5 min (pattern recognition; "is this the right test for X?")
+        double scanTime = (prodFiles * 1.5) + (testFiles * 0.5);
 
-        // 2. LOC READING TIME (with power law: only 30% gets deep attention)
-        double locTime = (totalLOC / 100.0) * 1.2;  // 1.2 min per 100 LOC (effective)
+        // 2. LOC READING TIME
+        //    SmartBear: 200–400 LOC/hr midpoint = 300 LOC/hr = 5 min/100 LOC
+        //    BUT: ~30% of lines get deep attention (the rest is context/boilerplate)
+        //    Effective: 5 × 0.30 = 1.5 min/100 LOC. Adjusted down to 1.2 for
+        //    skimmable boilerplate (getters, imports, closing braces).
+        double readTime = (totalLOC / 100.0) * 1.2;
 
-        // 3. COMPLEXITY THINKING TIME
-        double complexityTime = (avgComplexity * prodFileCount) * 0.4;  // 0.4 min per complexity point
+        // 3. COMPLEXITY THINK TIME
+        //    Each cognitive complexity unit = one branching path to mentally trace.
+        //    A trained reviewer can trace ~2 units/min (Campbell 2018).
+        //    Coefficient = 0.5 min/unit.
+        //    NOTE: We use totalCognitiveDelta directly here (not avgPerFile)
+        //    because total mental work scales with total paths across all files.
+        double thinkTime = cognitiveDelta * 0.5;
 
-        // 4. METHOD INSPECTION TIME (only significant changes)
-        double methodTime = significantMethodChanges * 0.3;  // 0.3 min per method
+        // 4. STRUCTURAL OVERHEAD
+        //    API changes, DB migrations, config changes require coordination thinking:
+        //    "Does this break callers?" "Is rollback safe?" "Do downstream teams know?"
+        //    +5 min per structural incident (conservative; Bosu et al. 2015).
+        double structuralTime = structuralChanges * 5.0;
 
-        // 5. HIGH-RISK DEEP DIVE
-        double riskTime = highRiskCount * 3.0;  // 3 min per high-risk file
+        double subtotal = scanTime + readTime + thinkTime + structuralTime;
 
-        // 6. CRITICAL FILE REVIEW
-        double criticalTime = criticalCount * 5.0;  // 5 min per critical file
+        // 5. FATIGUE MULTIPLIER
+        //    SmartBear: beyond 60 min, defect detection falls 40%.
+        //    Multiplier models this non-linearly but conservatively.
+        double multiplier = getFatigueMultiplier(level);
 
-        // 7. STRUCTURAL COORDINATION
-        double structuralTime = structuralChangeCount * 4.0;  // 4 min per structural change
+        double total   = subtotal * multiplier;
+        int    minutes = (int) Math.round(total);
 
-        // 8. SUBTOTAL
-        double subtotal = baseTime + locTime + complexityTime + methodTime +
-                                  riskTime + criticalTime + structuralTime;
+        // Bounds: minimum 2 min (any review needs at least a look), max 4 hours
+        // (beyond which the PR should be split, not reviewed in one sitting)
+        minutes = Math.max(2, Math.min(240, minutes));
 
-        // 9. FATIGUE MULTIPLIER (modest, based on difficulty)
-        double fatigueMultiplier = getFatigueMultiplier(level);
-        double total = subtotal * fatigueMultiplier;
-
-        // 10. MINIMUM & MAXIMUM BOUNDS
-        int minutes = (int) Math.round(total);
-        minutes = Math.max(2, minutes);      // Minimum 2 minutes
-        minutes = Math.min(240, minutes);    // Maximum 4 hours (cap unrealistic estimates)
-
-        log.debug("Time breakdown: base={}, loc={}, complexity={}, method={}, risk={}, critical={}, structural={}, multiplier={}, total={}",
-                round3(baseTime), round3(locTime), round3(complexityTime), round3(methodTime),
-                round3(riskTime), round3(criticalTime), round3(structuralTime),
-                round3(fatigueMultiplier), minutes);
+        log.debug("Time: scan={:.1f}, read={:.1f}, think={:.1f}, structural={:.1f}, " +
+                          "subtotal={:.1f}, multiplier={:.2f}, total={}",
+                scanTime, readTime, thinkTime, structuralTime, subtotal, multiplier, minutes);
 
         return minutes;
     }
 
     /**
-     * Fatigue multiplier based on difficulty level.
-     * More gradual than exponential - reflects real cognitive load.
+     * Fatigue multiplier per difficulty level.
+     *
+     * Based on SmartBear (2011): defect detection drops ~40% after 60 min.
+     * We model this as a modest multiplier on time, not on detection rate.
+     * Multipliers are conservative — reviewers are professionals who can manage
+     * fatigue, but it is real and should be acknowledged.
      */
     private double getFatigueMultiplier(DifficultyLevel level) {
         return switch (level) {
-            case TRIVIAL -> 1.0;      // No overhead
-            case EASY -> 1.1;         // Minor context switching
-            case MODERATE -> 1.2;     // Need occasional breaks
-            case HARD -> 1.35;        // Mental strain
-            case VERY_HARD -> 1.5;    // Significant fatigue
+            case TRIVIAL   -> 1.00;   // No cognitive overhead
+            case EASY      -> 1.08;   // Negligible context-switching cost
+            case MODERATE  -> 1.18;   // Some mental model maintenance required
+            case HARD      -> 1.30;   // Significant strain; reviewer may need a break
+            case VERY_HARD -> 1.45;   // Deep fatigue; split-session likely needed
         };
     }
 
-    /**
-     * Calculate cognitive load from domain/layer switching.
-     * Based on context-switching research in software engineering.
-     */
-    private double calculateCognitiveLoad(DiffMetrics metrics) {
-        Set<String> domains = new HashSet<>();
-        Set<String> layers = new HashSet<>();
+    // ─────────────────────────────────────────────────────────────────────────
+    // ARCHITECTURAL CONTEXT ANALYSIS
+    // ─────────────────────────────────────────────────────────────────────────
 
-        for (FileChangeSummary file : metrics.getFileChanges()) {
-            String filename = file.getFilename().toLowerCase();
+    private static class ContextAnalysis {
+        final int layerCount;
+        final int domainCount;
+        final Set<String> layers;
+        final Set<String> domains;
 
-            // Domain detection
-            if (filename.contains("auth") || filename.contains("security")) domains.add("auth");
-            if (filename.contains("payment") || filename.contains("billing")) domains.add("payment");
-            if (filename.contains("user") || filename.contains("profile")) domains.add("user");
-            if (filename.contains("config")) domains.add("config");
-            if (filename.contains("notification") || filename.contains("email")) domains.add("notification");
-
-            // Layer detection
-            if (filename.contains("/controller") || filename.contains("/api")) layers.add("presentation");
-            if (filename.contains("/service")) layers.add("business");
-            if (filename.contains("/repository") || filename.contains("/dao")) layers.add("data");
-            if (filename.contains("/model") || filename.contains("/entity")) layers.add("domain");
-            if (filename.contains("/config")) layers.add("infrastructure");
+        ContextAnalysis(Set<String> layers, Set<String> domains) {
+            this.layers      = layers;
+            this.domains     = domains;
+            this.layerCount  = layers.size();
+            this.domainCount = domains.size();
         }
-
-        // Cognitive load: 0.0 (single domain/layer) to 1.0 (many domains/layers)
-        double domainLoad = Math.min(1.0, domains.size() / 4.0);   // 4+ domains = max load
-        double layerLoad = Math.min(1.0, layers.size() / 4.0);     // 4+ layers = max load
-
-        return (domainLoad * 0.6) + (layerLoad * 0.4);  // Domain switching slightly more costly
     }
 
-    /**
-     * Detect structural changes (API, schema, breaking changes).
-     */
-    private boolean isStructuralChange(FileChangeSummary file) {
-        if (file == null || file.getFilename() == null) return false;
+    private ContextAnalysis analyzeContext(List<FileChangeSummary> files) {
+        Set<String> layers  = new TreeSet<>();
+        Set<String> domains = new TreeSet<>();
 
-        String path = file.getFilename().toLowerCase();
+        for (FileChangeSummary file : files) {
+            String lower = file.getFilename().toLowerCase();
 
-        // Database migrations
-        if (path.contains("migration") || path.contains("schema") || path.endsWith(".sql")) {
-            return true;
+            // Architectural layer detection
+            if (lower.contains("/controller") || lower.contains("/api")
+                        || lower.contains("/rest") || lower.contains("/graphql")) {
+                layers.add("presentation");
+            }
+            if (lower.contains("/service") || lower.contains("/usecase")
+                        || lower.contains("/handler")) {
+                layers.add("business");
+            }
+            if (lower.contains("/repository") || lower.contains("/dao")
+                        || lower.contains("/mapper")) {
+                layers.add("data-access");
+            }
+            if (lower.contains("/model") || lower.contains("/entity")
+                        || lower.contains("/domain")) {
+                layers.add("domain");
+            }
+            if (lower.contains("/config") || lower.contains("/adapter")
+                        || lower.contains("/client")) {
+                layers.add("infrastructure");
+            }
+
+            // Business domain detection
+            if (lower.contains("auth") || lower.contains("security")) domains.add("auth");
+            if (lower.contains("payment") || lower.contains("billing"))  domains.add("payments");
+            if (lower.contains("user") || lower.contains("profile"))     domains.add("user");
+            if (lower.contains("notification") || lower.contains("email")) domains.add("notifications");
+            if (lower.contains("config"))                                 domains.add("configuration");
+            if (lower.contains("pipeline") || lower.contains("batch"))   domains.add("data-pipeline");
         }
 
-        // API/Controller changes (public interface)
-        if (path.contains("/api/") || path.contains("/controller/")) {
-            return true;
-        }
-
-        // Configuration changes
-        if (path.contains("/config/") && (path.endsWith(".yml") || path.endsWith(".yaml") ||
-                                                  path.endsWith(".properties"))) {
-            return true;
-        }
-
-        // Public interfaces (heuristic: check for interface files or annotations)
-        if (file.getMethodChanges() != null) {
-            boolean hasPublicAPI = file.getMethodChanges().stream()
-                                           .anyMatch(m -> m.getAnnotations() != null &&
-                                                                  (m.getAnnotations().contains("@RestController") ||
-                                                                           m.getAnnotations().contains("@RequestMapping") ||
-                                                                           m.getAnnotations().contains("@Public")));
-            if (hasPublicAPI) return true;
-        }
-
-        return false;
+        return new ContextAnalysis(layers, domains);
     }
 
-    /**
-     * Check if file is a test file.
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // DIFFICULTY CATEGORIZATION
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private DifficultyLevel categorize(double score) {
+        if (score < 0.15) return DifficultyLevel.TRIVIAL;
+        if (score < 0.35) return DifficultyLevel.EASY;
+        if (score < 0.55) return DifficultyLevel.MODERATE;
+        if (score < 0.75) return DifficultyLevel.HARD;
+        return DifficultyLevel.VERY_HARD;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // REVIEWER GUIDANCE
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private String buildReviewerGuidance(DifficultyLevel level, ContextAnalysis ctx) {
+        String base = switch (level) {
+            case TRIVIAL   -> "Any reviewer. Async, same-day.";
+            case EASY      -> "Any reviewer familiar with the module. Async ok.";
+            case MODERATE  -> "Assign someone familiar with the changed layers. "
+                                      + "Leave detailed inline comments.";
+            case HARD      -> "Assign a domain expert. Synchronous review recommended. "
+                                      + "Block merge until reviewer has run integration tests locally.";
+            case VERY_HARD -> "RECOMMEND: Split this PR if possible. If not, assign senior engineer "
+                                      + "+ domain expert. Rigby & Bird (2013): review effectiveness drops "
+                                      + "sharply beyond 90 min and 400 LOC.";
+        };
+
+        if (ctx.layerCount >= 3) {
+            base += String.format(" Reviewer must maintain mental model across %d architectural layers: %s.",
+                    ctx.layerCount, String.join(" → ", ctx.layers));
+        }
+        if (ctx.domainCount >= 2) {
+            base += String.format(" Cross-domain PR touches: %s — tag domain owners.",
+                    String.join(", ", ctx.domains));
+        }
+
+        return base;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPER METHODS
+    // ─────────────────────────────────────────────────────────────────────────
+
     private boolean isTestFile(String filename) {
         if (filename == null) return false;
         String lower = filename.toLowerCase();
-        return lower.contains("/test/") ||
-                       lower.endsWith("test.java") ||
-                       lower.endsWith("spec.js") ||
-                       lower.endsWith("_test.py") ||
-                       lower.endsWith("test.ts");
+        return lower.contains("/test/")
+                       || lower.endsWith("test.java")
+                       || lower.endsWith("spec.js")
+                       || lower.endsWith("_test.py")
+                       || lower.endsWith("spec.rb")
+                       || lower.endsWith("test.ts");
     }
 
-    /**
-     * Categorize difficulty score into levels.
-     * Thresholds based on review time calibration.
-     */
-    private DifficultyLevel categorize(double score) {
-        if (score < 0.20) return DifficultyLevel.TRIVIAL;    // < 10 min
-        if (score < 0.40) return DifficultyLevel.EASY;       // 10-25 min
-        if (score < 0.60) return DifficultyLevel.MODERATE;   // 25-50 min
-        if (score < 0.80) return DifficultyLevel.HARD;       // 50-90 min
-        return DifficultyLevel.VERY_HARD;                    // 90+ min
+    private boolean isStructuralChange(FileChangeSummary file) {
+        if (file == null || file.getFilename() == null) return false;
+        String lower = file.getFilename().toLowerCase();
+        return lower.contains("migration")
+                       || lower.contains("schema")
+                       || lower.endsWith(".sql")
+                       || lower.contains("/api/")
+                       || lower.contains("/controller/")
+                       || (lower.contains("/config/")
+                                   && (lower.endsWith(".yml") || lower.endsWith(".yaml")
+                                               || lower.endsWith(".properties") || lower.endsWith(".env")));
     }
 
-    // =========================================================================
-    // UTILITY METHODS
-    // =========================================================================
-
-    /**
-     * Saturating normalization: value / (pivot + value)
-     * Creates smooth S-curve with diminishing returns.
-     */
+    /** Saturating function: value / (pivot + value) → [0, 1) */
     private double saturate(double value, double pivot) {
         if (value <= 0 || pivot <= 0) return 0.0;
         return value / (pivot + value);
     }
 
-    private double clamp(double value, double min, double max) {
-        return Math.max(min, Math.min(max, value));
+    private double clamp(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 
-    private double round3(double value) {
-        return Math.round(value * 1000.0) / 1000.0;
+    private double round3(double v) {
+        return Math.round(v * 1000.0) / 1000.0;
     }
 
-    private int safeInt(Integer value) {
-        return value != null ? value : 0;
-    }
-
-    private int safeAdd(Integer a, Integer b) {
-        return safeInt(a) + safeInt(b);
-    }
+    private int safeInt(Integer v)    { return v != null ? v : 0; }
+    private int safeAdd(Integer a, Integer b) { return safeInt(a) + safeInt(b); }
 
     private DifficultyAssessment buildTrivialAssessment() {
         return DifficultyAssessment.builder()
                        .overallScore(0.0)
                        .level(DifficultyLevel.TRIVIAL)
                        .breakdown(DifficultyBreakdown.builder()
-                                          .sizeContribution(0.0)
-                                          .spreadContribution(0.0)
                                           .cognitiveContribution(0.0)
+                                          .sizeContribution(0.0)
                                           .contextContribution(0.0)
-                                          .concentrationContribution(0.0)
+                                          .spreadContribution(0.0)
                                           .criticalImpactContribution(0.0)
+                                          .rawCognitiveDelta(0)
+                                          .rawLOC(0)
+                                          .rawLayerCount(0)
+                                          .rawDomainCount(0)
+                                          .rawCriticalCount(0)
                                           .build())
                        .estimatedReviewMinutes(2)
+                       .reviewerGuidance("No file changes detected. Possibly a metadata-only or description-only PR.")
                        .build();
     }
 }

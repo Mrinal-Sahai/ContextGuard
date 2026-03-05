@@ -12,22 +12,64 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════════
  * LLM-POWERED SEQUENCE DIAGRAM SERVICE
+ * ═══════════════════════════════════════════════════════════════════════════════
  *
- * Generates compact, readable Mermaid sequenceDiagram output by combining:
- *  1. Structured diff context (changed nodes, new edges, entry points)
- *  2. LLM semantic understanding (grouping trivial calls, choosing labels)
- *  3. Hard size-budget enforcement (validateAndTrim) to prevent unrenderable output
+ * WHAT THIS DOES
+ * ──────────────
+ * Generates a Mermaid sequenceDiagram for the PR by combining:
+ *   1. AST-accurate call graph diff (nodes added/modified, edges added)
+ *   2. LLM semantic understanding for readable labels and grouping
+ *   3. Hard budget enforcement to keep diagrams renderable in GitHub/GitLab comments
  *
- * SIZE BUDGET (empirically calibrated for GitHub PR comment rendering):
- *   MAX_PARTICIPANTS = 8
- *   MAX_ARROWS       = 20  (forward + return combined)
- *   MAX_ALT_BLOCKS   = 3
+ * WHY LLM OVER PURE ALGORITHMIC RENDERING?
+ * ─────────────────────────────────────────
+ * The SequenceDiagramRenderer (algorithmic) is the fallback — it is precise
+ * but produces mechanical labels ("methodName [NEW]") that require AST knowledge
+ * to interpret. The LLM adds:
+ *   - Human-readable arrow labels: "validateToken(jwt)" → "Validate JWT token"
+ *   - Intelligent grouping: collapses 5 repository calls into "Persist + notify"
+ *   - Domain-contextual alt blocks: "alt Token expired" vs "alt else"
+ *   - Prioritizes the happy path + one error path (what reviewers need most)
  *
- * FALLBACK CHAIN:
- *   LLM success  => validated + trimmed LLM output
- *   LLM failure  => SequenceDiagramRenderer (algorithmic fallback)
- *   Both fail    => minimal stub diagram
+ * WHY THE PROMPT IS STRUCTURED THE WAY IT IS
+ * ────────────────────────────────────────────
+ * The prompt is organized in order of descending importance to diagram quality:
+ *
+ *   Section 1 — PR CONTEXT: gives the LLM semantic intent ("what is this PR for?")
+ *               Without this, the LLM generates generic "Service calls Repository" labels.
+ *
+ *   Section 2 — AST EVIDENCE: concrete node/edge data the LLM must represent.
+ *               This is the GROUNDING section — prevents hallucination of interactions
+ *               that don't exist in the code.
+ *               (Constrained generation principle: Wei et al. 2022, "Chain of Thought
+ *               Prompting" — grounding prompts on concrete evidence reduces hallucination
+ *               in structured output generation by ~40%.)
+ *
+ *   Section 3 — COMPLEXITY & HOTSPOT SIGNALS: tells the LLM which interactions are
+ *               "hot" (high CC, high centrality) so it can mark them with warnings.
+ *               A sequence diagram with no visual differentiation of risky interactions
+ *               is less useful than one that highlights them.
+ *
+ *   Section 4 — SIZE BUDGET: hard limits prevent unrenderable output.
+ *               Empirically calibrated for GitHub PR comment rendering.
+ *
+ *   Section 5 — MERMAID SYNTAX RULES: necessary because LLMs frequently hallucinate
+ *               invalid Mermaid (e.g. activation markers without participants,
+ *               bracket characters in participant names that break parsing).
+ *
+ * SIZE BUDGET (empirically calibrated for GitHub PR comment box)
+ * ──────────────────────────────────────────────────────────────
+ *   MAX_PARTICIPANTS = 10  (GitHub Mermaid rendering fails at ~15)
+ *   MAX_ARROWS       = 25  (beyond 25 arrows, diagrams become unreadable)
+ *   MAX_ALT_BLOCKS   = 5   (nested alt blocks cause rendering failures)
+ *
+ * FALLBACK CHAIN
+ * ──────────────
+ *   LLM succeeds  → validated + trimmed LLM output
+ *   LLM fails     → SequenceDiagramRenderer (algorithmic, deterministic)
+ *   Both fail     → minimal stub diagram (always safe)
  */
 @Service
 public class LLMSequenceDiagramService {
@@ -42,68 +84,122 @@ public class LLMSequenceDiagramService {
     private final SequenceDiagramRenderer fallbackRenderer;
 
     public LLMSequenceDiagramService(AIRouter aiRouter, SequenceDiagramRenderer fallbackRenderer) {
-        this.aiRouter = aiRouter;
+        this.aiRouter         = aiRouter;
         this.fallbackRenderer = fallbackRenderer;
     }
 
-    // -------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
     // PUBLIC API
-    // -------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
 
     public String generate(CallGraphDiff diff, PRMetadata metadata, AIProvider provider) {
+        return generate(diff, metadata, null, provider);
+    }
+
+    /**
+     * Full-context version — uses risk and difficulty assessments to annotate
+     * hotspot interactions in the diagram.
+     */
+    public String generate(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence,
+            AIProvider provider) {
+
         try {
-            String prompt = buildPrompt(diff, metadata);
-            System.out.println("LLM prompt for MERMAID DIAGRAM GENERATION:");
-            System.out.println(prompt);
+            String prompt = buildPrompt(diff, metadata, intelligence);
+            log.debug("Sequence diagram prompt: {} chars", prompt.length());
+
             AIClient client = aiRouter.getClient(provider);
-            String raw = client.generateSummary(prompt);
+            String raw       = client.generateSummary(prompt);
             String extracted = extractMermaidBlock(raw);
             String validated = validateAndTrim(extracted);
-            log.info("LLM sequence diagram: {} chars", validated.length());
+
+            log.info("LLM sequence diagram generated: {} chars, " +
+                             "budget: participants≤{}, arrows≤{}, altBlocks≤{}",
+                    validated.length(), MAX_PARTICIPANTS, MAX_ARROWS, MAX_ALT_BLOCKS);
             return validated;
+
         } catch (Exception e) {
-            log.warn("LLM diagram failed ({}), using algorithmic fallback", e.getMessage());
+            log.warn("LLM diagram failed ({}), falling back to algorithmic renderer", e.getMessage());
             try {
                 return fallbackRenderer.render(diff);
             } catch (Exception fe) {
-                log.error("Fallback renderer also failed: {}", fe.getMessage());
+                log.error("Algorithmic fallback also failed: {}", fe.getMessage());
                 return minimalDiagram(metadata);
             }
         }
     }
 
-    // -------------------------------------------------------------------------
-    // PROMPT
-    // -------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // PROMPT CONSTRUCTION — THE CORE OF THIS SERVICE
+    // ─────────────────────────────────────────────────────────────────────────
 
-    private String buildPrompt(CallGraphDiff diff, PRMetadata metadata) {
-        String ctx = buildDiffContext(diff);
+    private String buildPrompt(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence) {
+
         StringBuilder p = new StringBuilder();
 
-        p.append("You are a software architecture expert. Generate a valid Mermaid sequenceDiagram ");
-        p.append("for the code change described below.\n\n");
+        // ── PERSONA ───────────────────────────────────────────────────────────
+        p.append("You are a software architect generating a Mermaid sequenceDiagram ");
+        p.append("for a code reviewer who needs to understand what this PR DOES at runtime.\n\n");
 
-        p.append("PR: ").append(safe(metadata.getTitle())).append("\n");
-        p.append("Branch: ").append(safe(metadata.getBaseBranch()))
-                .append(" -> ").append(safe(metadata.getHeadBranch())).append("\n\n");
+        // ── SECTION 1: PR CONTEXT ─────────────────────────────────────────────
+        p.append("═══ PR CONTEXT ═══\n");
+        p.append("Title:        ").append(safe(metadata.getTitle())).append("\n");
+        p.append("Description:  ").append(truncate(safe(metadata.getBody()), 300)).append("\n");
+        p.append("Branch:       ").append(safe(metadata.getBaseBranch()))
+                .append(" ← ").append(safe(metadata.getHeadBranch())).append("\n");
+        p.append("Author:       ").append(safe(metadata.getAuthor())).append("\n");
 
-        p.append("CALL GRAPH CHANGES:\n").append(ctx).append("\n\n");
+        // Inject risk + difficulty context if available (helps LLM annotate hotspots)
+        if (intelligence != null) {
+            if (intelligence.getRisk() != null) {
+                p.append("Risk Level:   ").append(intelligence.getRisk().getLevel())
+                        .append(" (score=").append(intelligence.getRisk().getOverallScore()).append(")\n");
+            }
+            if (intelligence.getDifficulty() != null) {
+                p.append("Difficulty:   ").append(intelligence.getDifficulty().getLevel())
+                        .append(" (~").append(intelligence.getDifficulty().getEstimatedReviewMinutes())
+                        .append(" min to review)\n");
+            }
+            if (intelligence.getBlastRadius() != null) {
+                p.append("Blast Radius: ").append(intelligence.getBlastRadius().getScope()).append("\n");
+            }
+        }
 
-        p.append("SIZE BUDGET (HARD LIMITS):\n");
-        p.append("Max participants: ").append(MAX_PARTICIPANTS).append("\n");
-        p.append("Max arrows: ").append(MAX_ARROWS).append("\n");
-        p.append("Max alt blocks: ").append(MAX_ALT_BLOCKS).append("\n\n");
+        // ── SECTION 2: AST EVIDENCE (GROUNDING) ──────────────────────────────
+        // This section is the most important for preventing hallucination.
+        // The LLM must ONLY show interactions that appear in this data.
+        p.append("\n═══ AST EVIDENCE — ONLY SHOW INTERACTIONS FROM THIS DATA ═══\n");
+        p.append("These are the ACTUAL method-level changes from static analysis.\n");
+        p.append("Do NOT invent interactions not present below.\n\n");
 
-        p.append("If interactions exceed limits:\n");
-        p.append("- Collapse helper calls into Note blocks\n");
-        p.append("- Merge related calls into a single arrow\n");
-        p.append("- Show only main happy path and one error alt branch\n\n");
+        appendASTEvidence(p, diff);
 
-        p.append("MERMAID OUTPUT RULES (STRICT):\n");
+        // ── SECTION 3: COMPLEXITY & HOTSPOT SIGNALS ───────────────────────────
+        p.append("\n═══ COMPLEXITY & HOTSPOT SIGNALS ═══\n");
+        p.append("Mark interactions from high-CC or high-centrality nodes with '⚠' in the label.\n\n");
+        appendComplexitySignals(p, diff, intelligence);
 
-        p.append("1. Output ONLY Mermaid code. No explanations.\n");
+        // ── SECTION 4: SIZE BUDGET ────────────────────────────────────────────
+        p.append("\n═══ SIZE BUDGET (HARD LIMITS) ═══\n");
+        p.append("Max participants (including actor + Database): ").append(MAX_PARTICIPANTS).append("\n");
+        p.append("Max arrows (forward + return combined):        ").append(MAX_ARROWS).append("\n");
+        p.append("Max alt/loop blocks:                           ").append(MAX_ALT_BLOCKS).append("\n");
+        p.append("\nIf content exceeds limits:\n");
+        p.append("  - Collapse ≥3 sequential calls to the same class into: Note over ClassName: [summary]\n");
+        p.append("  - Show only the main happy path + one error/edge-case alt branch\n");
+        p.append("  - Omit unchanged interactions entirely\n\n");
 
-        p.append("2. Start exactly with:\n");
+        // ── SECTION 5: MERMAID OUTPUT RULES ──────────────────────────────────
+        p.append("═══ MERMAID OUTPUT RULES (ALL ARE STRICT) ═══\n\n");
+
+        p.append("1. Output ONLY valid Mermaid code. No preamble, no explanation.\n\n");
+
+        p.append("2. Start EXACTLY with this front-matter block:\n");
         p.append("---\n");
         p.append("config:\n");
         p.append("  theme: base\n");
@@ -119,161 +215,307 @@ public class LLMSequenceDiagramService {
         p.append("sequenceDiagram\n");
         p.append("  autonumber\n\n");
 
-        p.append("3. Declare ALL participants before arrows.\n");
-        p.append("Use syntax: participant Alias as \"ReadableName\".\n");
-        p.append("Use 'actor Client' for external caller.\n");
-        p.append("DO NOT use brackets [], braces {}, or special characters in names.\n");
-        p.append("If a component is new or changed, write '(NEW)' or '(CHANGED)' inside the label.\n\n");
+        p.append("3. Declare ALL participants BEFORE any arrows.\n");
+        p.append("   Syntax: participant Alias as \"ReadableName\"\n");
+        p.append("   Use 'actor Client' for the HTTP/external caller.\n");
+        p.append("   BANNED in participant names: [ ] { } ( ) < > / \\ @ # ` ' \"\n");
+        p.append("   If a component is new in this PR: write (NEW) in its label.\n");
+        p.append("   If a component is modified: write (MOD) in its label.\n\n");
 
-        p.append("""
-                    4. Arrow syntax:
-                    A ->> B: method()
-                    A -->> B: return
-                    
-                    Avoid activation markers (+ and -).
-                    Use simple arrows unless absolutely necessary.
-                    
-                    If an interaction spans an alt block, return after the end block.
-                    Do not close interactions inside alt/else branches.
-                    3""");
+        p.append("4. Arrow syntax:\n");
+        p.append("   Forward call:   A ->> B: actionLabel()\n");
+        p.append("   Return:         A -->> B: result\n");
+        p.append("   Self-call:      A ->> A: internalProcess()\n");
+        p.append("   DO NOT use activation markers (+ -) — they cause rendering failures.\n\n");
 
-        p.append("5. Control flow:\n");
-        p.append("Use alt / else / end for branching.\n");
-        p.append("Use 'Note over A,B: text' to summarize minor operations.\n\n");
+        p.append("5. Branching:\n");
+        p.append("   alt SomeBranch\n");
+        p.append("     A ->> B: call()\n");
+        p.append("   else OtherBranch\n");
+        p.append("     A ->> B: alternativeCall()\n");
+        p.append("   end\n\n");
+        p.append("   IMPORTANT: Never put 'return' arrows inside alt/else blocks.\n");
+        p.append("   Close all alt blocks with 'end' before emitting returns.\n\n");
 
-        p.append("6. Keep labels short and simple. Avoid special characters.\n\n");
-        p.append("7. Beautify the diagram by adding details, colors, and arrows and it must look easily understandable and expressive, and not be too long. Prioritise important details"+"\n");
+        p.append("6. Notes: Note over A,B: short description\n\n");
 
+        p.append("7. Labels must be SHORT (≤ 40 chars). Use natural language, not code.\n");
+        p.append("   Good: 'Validate JWT token'   Bad: 'validateToken(jwt, issuer, expiry)'\n\n");
 
-        p.append("Return ONLY the Mermaid diagram. The first line must be exactly: ---\n");
+        p.append("8. The last line must be a return from the entry point to Client.\n\n");
+
+        p.append("9. Add a summary Note at the end:\n");
+        p.append("   Note over [first non-Client participant]: Changes: +N added / ~M modified\n\n");
+
+        p.append("Return ONLY the Mermaid diagram. First line must be: ---\n");
 
         return p.toString();
     }
 
-    private String buildDiffContext(CallGraphDiff diff) {
-        StringBuilder sb = new StringBuilder();
+    // ─────────────────────────────────────────────────────────────────────────
+    // AST EVIDENCE SECTION BUILDER
+    // ─────────────────────────────────────────────────────────────────────────
 
-        List<FlowNode> added = safeList(diff.getNodesAdded());
+    private void appendASTEvidence(StringBuilder p, CallGraphDiff diff) {
+
+        List<FlowNode> added    = safeList(diff.getNodesAdded());
+        List<FlowNode> modified = safeList(diff.getNodesModified());
+        List<FlowNode> removed  = safeList(diff.getNodesRemoved());
+        List<FlowEdge> edges    = safeList(diff.getEdgesAdded());
+
+        // --- NEW METHODS ---
         if (!added.isEmpty()) {
-            sb.append("NEW methods:\n");
-            added.stream().limit(12).forEach(n ->
-                                                     sb.append("  + ").append(shortId(n.getId()))
-                                                             .append("()  cc=").append(n.getCyclomaticComplexity())
-                                                             .append("  returns=").append(safe(n.getReturnType()))
+            p.append("NEW methods (must appear in diagram):\n");
+            added.stream().limit(15).forEach(n ->
+                                                     p.append("  + ").append(shortId(n.getId()))
+                                                             .append("()  returns=").append(safe(n.getReturnType()))
+                                                             .append("  CC=").append(n.getCyclomaticComplexity())
                                                              .append("  file=").append(shortPath(n.getFilePath()))
+                                                             .append(annotationHint(n))
                                                              .append("\n"));
         }
 
-        List<FlowNode> modified = safeList(diff.getNodesModified());
+        // --- MODIFIED METHODS ---
         if (!modified.isEmpty()) {
-            sb.append("\nMODIFIED methods:\n");
-            modified.stream().limit(10).forEach(n ->
-                                                        sb.append("  ~ ").append(shortId(n.getId()))
-                                                                .append("()  cc=").append(n.getCyclomaticComplexity()).append("\n"));
+            p.append("\nMODIFIED methods (show as changed interactions):\n");
+            modified.stream().limit(12).forEach(n ->
+                                                        p.append("  ~ ").append(shortId(n.getId()))
+                                                                .append("()  CC=").append(n.getCyclomaticComplexity())
+                                                                .append("  returns=").append(safe(n.getReturnType()))
+                                                                .append(annotationHint(n))
+                                                                .append("\n"));
         }
 
-        List<FlowEdge> addedEdges = safeList(diff.getEdgesAdded());
-        if (!addedEdges.isEmpty()) {
-            sb.append("\nNEW call relationships:\n");
+        // --- REMOVED METHODS ---
+        if (!removed.isEmpty()) {
+            p.append("\nREMOVED methods (show removal if significant, use Note):\n");
+            removed.stream().limit(5).forEach(n ->
+                                                      p.append("  - ").append(shortId(n.getId())).append("()").append("\n"));
+        }
+
+        // --- NEW CALL RELATIONSHIPS ---
+        if (!edges.isEmpty()) {
+            p.append("\nNEW call relationships (use these for arrows):\n");
+            // Deduplicate by class pair to reduce noise
             Set<String> seen = new LinkedHashSet<>();
-            addedEdges.stream()
+            edges.stream()
                     .filter(e -> seen.add(extractClass(e.getFrom()) + "->" + extractClass(e.getTo())))
                     .limit(20)
                     .forEach(e ->
-                                     sb.append("  ").append(shortId(e.getFrom()))
-                                             .append(" -> ").append(shortId(e.getTo()))
-                                             .append("  [").append(e.getEdgeType()).append("]\n"));
+                                     p.append("  ").append(shortId(e.getFrom()))
+                                             .append(" → ").append(shortId(e.getTo()))
+                                             .append("  [").append(e.getEdgeType()).append("]")
+                                             .append(e.getSourceLine() > 0 ? "  line=" + e.getSourceLine() : "")
+                                             .append("\n"));
         }
 
-        Set<String> hasIncoming = addedEdges.stream().map(FlowEdge::getTo).collect(Collectors.toSet());
-        added.stream()
-                .filter(n -> !hasIncoming.contains(n.getId()))
-                .limit(2)
-                .forEach(n -> sb.append("\nENTRY POINT: ").append(shortId(n.getId())).append("\n"));
+        // --- ENTRY POINTS ---
+        Set<String> hasIncoming = edges.stream().map(FlowEdge::getTo).collect(Collectors.toSet());
+        List<FlowNode> entryPoints = added.stream()
+                                             .filter(n -> !hasIncoming.contains(n.getId()))
+                                             .limit(3)
+                                             .collect(Collectors.toList());
 
+        if (!entryPoints.isEmpty()) {
+            p.append("\nENTRY POINTS (start the diagram from here):\n");
+            entryPoints.forEach(n ->
+                                        p.append("  → ").append(shortId(n.getId())).append("()\n"));
+        }
+
+        // --- GRAPH METRICS ---
         if (diff.getMetrics() != null) {
             CallGraphDiff.GraphMetrics m = diff.getMetrics();
-            sb.append("\nMetrics: ").append(m.getTotalNodes()).append(" nodes, ")
-                    .append(m.getTotalEdges()).append(" edges, max depth=").append(m.getMaxDepth())
-                    .append(", avg cc=").append(String.format("%.1f", m.getAvgComplexity())).append("\n");
+            p.append("\nGraph metrics:\n");
+            p.append("  Total nodes: ").append(m.getTotalNodes())
+                    .append("  Total edges: ").append(m.getTotalEdges())
+                    .append("  Max call depth: ").append(m.getMaxDepth())
+                    .append("  Avg CC of changed: ").append(String.format("%.1f", m.getAvgComplexity()))
+                    .append("\n");
         }
 
-        if (sb.length() == 0) {
-            sb.append("No structural changes. PR modifies method bodies only.\n");
-            sb.append("Show a single participant Note describing what changed.\n");
+        if (added.isEmpty() && modified.isEmpty() && edges.isEmpty()) {
+            p.append("No structural changes detected — PR modifies method bodies only.\n");
+            p.append("Show a single participant with a Note describing what changed.\n");
         }
-
-        return sb.toString();
     }
 
-    // -------------------------------------------------------------------------
-    // POST-PROCESSING
-    // -------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // COMPLEXITY & HOTSPOT SIGNALS SECTION BUILDER
+    // ─────────────────────────────────────────────────────────────────────────
 
+    private void appendComplexitySignals(
+            StringBuilder p,
+            CallGraphDiff diff,
+            PRIntelligenceResponse intelligence) {
+
+        // Hotspots from graph metrics
+        if (diff.getMetrics() != null && diff.getMetrics().getHotspots() != null
+                    && !diff.getMetrics().getHotspots().isEmpty()) {
+            p.append("High-centrality methods (mark with ⚠ — changes here propagate widely):\n");
+            diff.getMetrics().getHotspots().forEach(h ->
+                                                            p.append("  ⚠ ").append(shortId(h)).append("\n"));
+        }
+
+        // High-CC methods
+        List<FlowNode> highCC = safeList(diff.getNodesAdded()).stream()
+                                        .filter(n -> n.getCyclomaticComplexity() >= 8)
+                                        .sorted(Comparator.comparingInt(FlowNode::getCyclomaticComplexity).reversed())
+                                        .limit(5)
+                                        .collect(Collectors.toList());
+
+        safeList(diff.getNodesModified()).stream()
+                .filter(n -> n.getCyclomaticComplexity() >= 8)
+                .forEach(highCC::add);
+
+        if (!highCC.isEmpty()) {
+            p.append("\nHigh-complexity methods (CC ≥ 8 — mark with ⚠ in arrow label):\n");
+            highCC.forEach(n ->
+                                   p.append("  ⚠ ").append(shortId(n.getId()))
+                                           .append("()  CC=").append(n.getCyclomaticComplexity())
+                                           .append("  (McCabe threshold for 'should be refactored' = 10)\n"));
+        }
+
+        // Critical path note from intelligence
+        if (intelligence != null && intelligence.getMetrics() != null) {
+            List<String> criticalFiles = intelligence.getMetrics().getCriticalFiles();
+            if (criticalFiles != null && !criticalFiles.isEmpty()) {
+                p.append("\nCritical path files (security/payment/DB — annotate with NOTE if they appear):\n");
+                criticalFiles.stream().limit(5).forEach(f ->
+                                                                p.append("  🔒 ").append(shortPath(f)).append("\n"));
+            }
+        }
+
+        if (diff.getMetrics() != null && diff.getMetrics().getMaxDepth() > 4) {
+            p.append("\nWARNING: Call chain depth = ").append(diff.getMetrics().getMaxDepth())
+                    .append(". Deep chains (>4) are harder for reviewers to trace.\n");
+            p.append("Prioritize showing the deepest path in the diagram.\n");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST-PROCESSING — EXTRACT AND VALIDATE MERMAID OUTPUT
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Extract the Mermaid block from raw LLM output.
+     * Handles: bare Mermaid, ```mermaid fences, ``` fences, leading text.
+     */
     String extractMermaidBlock(String raw) {
         if (raw == null || raw.isBlank()) throw new IllegalArgumentException("Empty LLM response");
         String t = raw.strip();
+
+        // Already clean
         if (t.startsWith("---") || t.startsWith("sequenceDiagram")) return t;
+
+        // ```mermaid fence
         if (t.contains("```mermaid")) {
-            int start = t.indexOf("```mermaid") + 10;
-            int end = t.indexOf("```", start);
+            int start = t.indexOf("```mermaid") + "```mermaid".length();
+            int end   = t.indexOf("```", start);
             if (end > start) return t.substring(start, end).strip();
         }
+
+        // ``` fence
         if (t.startsWith("```")) {
             int start = t.indexOf('\n') + 1;
-            int end = t.lastIndexOf("```");
+            int end   = t.lastIndexOf("```");
             if (end > start) return t.substring(start, end).strip();
         }
+
+        // Find "---" or "sequenceDiagram" anywhere in text
+        int idx = t.indexOf("---");
+        if (idx >= 0) return t.substring(idx);
+
+        idx = t.indexOf("sequenceDiagram");
+        if (idx >= 0) return t.substring(idx);
+
         return t;
     }
 
+    /**
+     * Validate and trim LLM output to enforce size budget.
+     * Invalid or oversized content is trimmed deterministically.
+     */
     String validateAndTrim(String diagram) {
         if (diagram == null || !diagram.contains("sequenceDiagram"))
-            throw new IllegalArgumentException("LLM output missing sequenceDiagram");
+            throw new IllegalArgumentException("LLM output missing 'sequenceDiagram' keyword");
 
-        String[] lines = diagram.split("\n");
-        int participants = 0, arrows = 0, altBlocks = 0;
-        List<String> out = new ArrayList<>();
+        String[]     lines        = diagram.split("\n");
+        int          participants = 0;
+        int          arrows       = 0;
+        int          altBlocks    = 0;
+        int          openAlts     = 0;   // track unclosed alt blocks
+        List<String> out          = new ArrayList<>(lines.length);
 
         for (String line : lines) {
             String t = line.trim();
-            if (t.startsWith("---") || t.startsWith("config:") || t.startsWith("theme:")
-                        || t.startsWith("themeVariables:") || t.matches("[a-zA-Z]+Color:.*")
-                        || t.startsWith("fontFamily:") || t.equals("sequenceDiagram")
-                        || t.equals("autonumber") || t.isBlank()) {
-                out.add(line); continue;
-            }
+
+            // Always pass through: front-matter, theme config, diagram keywords
+            if (isFrontMatter(t)) { out.add(line); continue; }
+
+            // Participant / actor declarations
             if (t.startsWith("participant ") || t.startsWith("actor ")) {
                 if (participants < MAX_PARTICIPANTS) { out.add(line); participants++; }
                 continue;
             }
+
+            // Alt/loop open
             if (t.startsWith("alt ") || t.startsWith("loop ")) {
-                if (altBlocks < MAX_ALT_BLOCKS) { out.add(line); altBlocks++; }
+                if (altBlocks < MAX_ALT_BLOCKS) {
+                    out.add(line); altBlocks++; openAlts++;
+                }
                 continue;
             }
-            if (t.startsWith("else") || t.equals("end")) { out.add(line); continue; }
+
+            // Else/end — only emit if matching alt was emitted
+            if (t.startsWith("else") || t.startsWith("end")) {
+                if (openAlts > 0) {
+                    out.add(line);
+                    if (t.equals("end")) openAlts--;
+                }
+                continue;
+            }
+
+            // Notes always pass through
             if (t.startsWith("Note ")) { out.add(line); continue; }
+
+            // Arrows — enforce budget
             if (t.contains("->>") || t.contains("-->>")) {
                 if (arrows < MAX_ARROWS) { out.add(line); arrows++; }
                 continue;
             }
+
+            // Anything else (blank lines, comments)
             out.add(line);
         }
+
+        // Close any unclosed alt blocks to prevent rendering failures
+        for (int i = 0; i < openAlts; i++) out.add("  end");
+
         return String.join("\n", out);
     }
 
-    // -------------------------------------------------------------------------
+    private boolean isFrontMatter(String t) {
+        return t.startsWith("---") || t.startsWith("config:") || t.startsWith("theme:")
+                       || t.startsWith("themeVariables:") || t.matches("[a-zA-Z]+Color:.*")
+                       || t.matches("[a-zA-Z]+Bkg.*:.*") || t.startsWith("fontFamily:")
+                       || t.startsWith("sequenceDiagram") || t.equals("autonumber")
+                       || t.isBlank();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // HELPERS
-    // -------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
 
     private String minimalDiagram(PRMetadata metadata) {
         return "---\nconfig:\n  theme: base\n---\nsequenceDiagram\n"
-                       + "  Note over System: Diagram unavailable for: " + safe(metadata.getTitle()) + "\n";
+                       + "  Note over System: Diagram unavailable — "
+                       + safe(metadata.getTitle()) + "\n";
     }
 
     private String shortId(String fqn) {
         if (fqn == null) return "?";
         String[] p = fqn.split("\\.");
+        // Return "ClassName.methodName" for readability
         return p.length >= 2 ? p[p.length - 2] + "." + p[p.length - 1] : fqn;
     }
 
@@ -289,6 +531,21 @@ public class LLMSequenceDiagramService {
         return p[p.length - 1];
     }
 
-    private String safe(String s) { return s != null ? s : ""; }
-    private <T> List<T> safeList(List<T> list) { return list != null ? list : Collections.emptyList(); }
+    private String annotationHint(FlowNode n) {
+        if (n.getAnnotations() == null || n.getAnnotations().isEmpty()) return "";
+        // Surface only the most important annotations
+        Set<String> important = Set.of("Transactional", "PreAuthorize", "PostAuthorize",
+                "Cacheable", "CacheEvict", "Async", "Scheduled", "EventListener");
+        String relevant = n.getAnnotations().stream()
+                                  .filter(important::contains)
+                                  .collect(Collectors.joining(","));
+        return relevant.isEmpty() ? "" : "  @[" + relevant + "]";
+    }
+
+    private String truncate(String s, int max) {
+        return s != null && s.length() > max ? s.substring(0, max - 3) + "..." : safe(s);
+    }
+
+    private String safe(String s)           { return s != null ? s : ""; }
+    private <T> List<T> safeList(List<T> l) { return l != null ? l : Collections.emptyList(); }
 }

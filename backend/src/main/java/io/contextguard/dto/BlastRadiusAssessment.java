@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.redis.connection.stream.StreamInfo;
 
 import java.util.List;
 
@@ -23,4 +24,9 @@ public class BlastRadiusAssessment {
     private int affectedModules;  // Based on top-level package structure
     private List<String> impactedAreas;  // e.g., ["authentication", "payment"]
     private String assessment;  // Human-readable summary
+    private List<String> affectedModuleNames;
+    private List<String> affectedLayers;
+    private List<String> affectedDomains;  // e.g., ["authentication", "payment">
+    private int affectedLayerCount;
+    private String reviewerGuidance;
 }
