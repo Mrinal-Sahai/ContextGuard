@@ -107,6 +107,14 @@ public class LLMSequenceDiagramService {
             AIProvider provider) {
 
         try {
+
+            boolean hasEdges = diff.getEdgesAdded() != null && !diff.getEdgesAdded().isEmpty();
+
+            // STRATEGY 1: handle "no edges" scenario separately
+            if (!hasEdges) {
+                log.info("No call graph edges detected → switching to structural diagram mode");
+                return generateStructuralDiagram(diff, metadata, intelligence, provider);
+            }
             String prompt = buildPrompt(diff, metadata, intelligence);
             log.debug("Sequence diagram prompt: {} chars", prompt.length());
 
@@ -177,7 +185,13 @@ public class LLMSequenceDiagramService {
         p.append("These are the ACTUAL method-level changes from static analysis.\n");
         p.append("Do NOT invent interactions not present below.\n\n");
 
-        appendASTEvidence(p, diff);
+        boolean hasEdges = !safeList(diff.getEdgesAdded()).isEmpty();
+
+        if (hasEdges) {
+            appendASTEvidence(p, diff);
+        } else {
+            appendStructuralEvidence(p, diff);
+        }
 
         // ── SECTION 3: COMPLEXITY & HOTSPOT SIGNALS ───────────────────────────
         p.append("\n═══ COMPLEXITY & HOTSPOT SIGNALS ═══\n");
@@ -502,6 +516,27 @@ public class LLMSequenceDiagramService {
                        || t.isBlank();
     }
 
+    private void appendStructuralEvidence(StringBuilder p, CallGraphDiff diff) {
+
+        List<FlowNode> modified = safeList(diff.getNodesModified());
+
+        p.append("═══ STRUCTURAL CHANGES (NO CALL GRAPH EDGES) ═══\n");
+        p.append("The PR modifies internal logic of these methods.\n");
+        p.append("No new call relationships were detected.\n\n");
+
+        modified.stream().limit(10).forEach(n ->
+                                                    p.append("Modified: ")
+                                                            .append(shortId(n.getId()))
+                                                            .append(" CC=")
+                                                            .append(n.getCyclomaticComplexity())
+                                                            .append("\n")
+        );
+
+        p.append("\nDiagram rule:\n");
+        p.append("Show Client calling each modified component once.\n");
+        p.append("Do NOT invent internal interactions.\n");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // HELPERS
     // ─────────────────────────────────────────────────────────────────────────
@@ -548,4 +583,127 @@ public class LLMSequenceDiagramService {
 
     private String safe(String s)           { return s != null ? s : ""; }
     private <T> List<T> safeList(List<T> l) { return l != null ? l : Collections.emptyList(); }
+
+    private String generateStructuralDiagram(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence,
+            AIProvider provider) {
+
+        try {
+
+            String prompt = buildStructuralPrompt(diff, metadata, intelligence);
+            log.debug("Structural diagram prompt: {} chars", prompt.length());
+
+            AIClient client = aiRouter.getClient(provider);
+            String raw       = client.generateSummary(prompt);
+            String extracted = extractMermaidBlock(raw);
+            String validated = validateAndTrim(extracted);
+
+            log.info("Structural diagram generated: {} chars", validated.length());
+
+            return validated;
+
+        } catch (Exception e) {
+
+            log.warn("Structural diagram generation failed: {}", e.getMessage());
+
+            // deterministic fallback
+            return deterministicStructuralDiagram(diff, metadata);
+        }
+    }
+
+    private String buildStructuralPrompt(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence) {
+
+        StringBuilder p = new StringBuilder();
+
+        p.append("You are generating a Mermaid sequenceDiagram for a code reviewer.\n");
+        p.append("IMPORTANT: No call graph edges exist in this PR.\n");
+        p.append("The PR modifies internal method logic only.\n\n");
+
+        p.append("═══ PR CONTEXT ═══\n");
+        p.append("Title: ").append(safe(metadata.getTitle())).append("\n");
+        p.append("Author: ").append(safe(metadata.getAuthor())).append("\n\n");
+
+        p.append("═══ MODIFIED METHODS ═══\n");
+
+        safeList(diff.getNodesModified())
+                .stream()
+                .limit(12)
+                .forEach(n ->
+                                 p.append(" - ")
+                                         .append(shortId(n.getId()))
+                                         .append(" CC=")
+                                         .append(n.getCyclomaticComplexity())
+                                         .append("\n")
+                );
+
+        p.append("\nDIAGRAM RULES:\n");
+        p.append("1. Show Client calling each modified component once.\n");
+        p.append("2. Do NOT invent interactions between components.\n");
+        p.append("3. Use Note blocks to describe internal logic changes.\n");
+        p.append("4. Participants should be the modified classes.\n\n");
+
+        appendMermaidRules(p);
+
+        return p.toString();
+    }
+
+
+    private String deterministicStructuralDiagram(
+            CallGraphDiff diff,
+            PRMetadata metadata) {
+
+        StringBuilder d = new StringBuilder();
+
+        d.append("---\n");
+        d.append("config:\n");
+        d.append("  theme: base\n");
+        d.append("---\n");
+        d.append("sequenceDiagram\n");
+        d.append("  autonumber\n\n");
+
+        d.append("  actor Client\n");
+
+        Set<String> participants = safeList(diff.getNodesModified())
+                                           .stream()
+                                           .map(n -> extractClass(n.getId()))
+                                           .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        for (String p : participants) {
+            d.append("  participant ").append(p).append("\n");
+        }
+
+        for (String p : participants) {
+
+            d.append("\n  Client ->> ")
+                    .append(p)
+                    .append(": Invoke modified logic\n");
+
+            d.append("  Note over ")
+                    .append(p)
+                    .append(": Internal behavior updated\n");
+        }
+
+        d.append("\n  Note over Client: No call graph changes detected\n");
+
+        return d.toString();
+    }
+    private void appendMermaidRules(StringBuilder p) {
+
+        p.append("\nOUTPUT RULES\n");
+        p.append("Return ONLY Mermaid code.\n");
+        p.append("Start with:\n");
+        p.append("---\n");
+        p.append("config:\n");
+        p.append("  theme: base\n");
+        p.append("---\n");
+        p.append("sequenceDiagram\n");
+        p.append("  autonumber\n\n");
+    }
 }
+
+
