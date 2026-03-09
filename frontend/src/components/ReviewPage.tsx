@@ -4,6 +4,7 @@ import { MetricCard } from "./MetricCard";
 import { ASTMetricsPanel } from "./ASTMetricsPanel";
 import { useRef } from "react";
 import html2canvas from "html2canvas-pro";
+import RiskDifficultyPanel from "./RiskDifficultyPanel";
 import jsPDF from "jspdf";
 import {
   Shield,
@@ -295,22 +296,11 @@ const generatePDF = async () => {
           </div>
         </div>
 
-        {/* Breakdown Charts */}
-        <div className="grid md:grid-cols-2 gap-6">
-          <BreakdownChart
-            title="Risk Breakdown"
-            breakdown={analysisData.risk?.breakdown ?? {}}
-            type="risk"
-            isDarkMode={isDarkMode}
-          />
-
-          <BreakdownChart
-            title="Difficulty Breakdown"
-            breakdown={analysisData.difficulty?.breakdown ?? {}}
-            type="difficulty"
-            isDarkMode={isDarkMode}
-          />
-        </div>
+       <RiskDifficultyPanel
+  risk={analysisData.risk}
+  difficulty={analysisData.difficulty}
+  isDarkMode={isDarkMode}
+/>
 
 
         {/* Blast Radius */}
