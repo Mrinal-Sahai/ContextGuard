@@ -15,14 +15,14 @@ import java.util.stream.Collectors;
  * ═══════════════════════════════════════════════════════════════════════════════
  * LLM-POWERED SEQUENCE DIAGRAM SERVICE
  * ═══════════════════════════════════════════════════════════════════════════════
- *
+ * <p>
  * WHAT THIS DOES
  * ──────────────
  * Generates a Mermaid sequenceDiagram for the PR by combining:
  *   1. AST-accurate call graph diff (nodes added/modified, edges added)
  *   2. LLM semantic understanding for readable labels and grouping
  *   3. Hard budget enforcement to keep diagrams renderable in GitHub/GitLab comments
- *
+ * <p>
  * WHY LLM OVER PURE ALGORITHMIC RENDERING?
  * ─────────────────────────────────────────
  * The SequenceDiagramRenderer (algorithmic) is the fallback — it is precise

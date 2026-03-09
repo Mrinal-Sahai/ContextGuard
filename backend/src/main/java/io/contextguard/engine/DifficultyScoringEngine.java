@@ -134,9 +134,9 @@ import java.util.*;
  *              × fatigue_multiplier
  *
  * FILE SCAN: 1.5 min/production file, 0.5 min/test file (pattern matching).
- * LOC READING: 1.2 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
+ * LOC READING: 1.5 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
  *   midpoint = 5 min/100 LOC. But only ~30% gets deep reading: 5 × 0.30 ≈ 1.5 min/100.
- *   Adjusted to 1.2 to account for skimming of boilerplate/getters.)
+ *   Adjusted to 1.5 to account for skimming of boilerplate/getters.)
  * COMPLEXITY THINK TIME: 0.5 min per cognitive complexity unit (above delta of 0).
  *   Rationale: each unit represents a mental path to trace. A trained reviewer
  *   handles ~2 units/min. (Campbell 2018; empirical calibration.)
@@ -332,9 +332,9 @@ public class DifficultyScoringEngine {
         // 2. LOC READING TIME
         //    SmartBear: 200–400 LOC/hr midpoint = 300 LOC/hr = 5 min/100 LOC
         //    BUT: ~30% of lines get deep attention (the rest is context/boilerplate)
-        //    Effective: 5 × 0.30 = 1.5 min/100 LOC. Adjusted down to 1.2 for
+        //    Effective: 5 × 0.30 = 1.5 min/100 LOC. Adjusted down to 1.5 for
         //    skimmable boilerplate (getters, imports, closing braces).
-        double readTime = (linesAdded / 100.0) * 1.2;
+        double readTime = (linesAdded / 100.0) * 1.5;
 
         // 3. COMPLEXITY THINK TIME
         //    Each cognitive complexity unit = one branching path to mentally trace.
@@ -350,12 +350,21 @@ public class DifficultyScoringEngine {
         //    +5 min per structural incident (conservative; Bosu et al. 2015).
         double structuralTime = structuralChanges * 5.0;
 
-        double subtotal = scanTime + readTime + thinkTime + structuralTime;
+        /*
+        Bosu et al. (2015)
+        Characteristics of Useful Code Reviews.
+        Observation:
+        Context switching during reviews introduces measurable overhead.
+         */
+        double fileSwitchCost = Math.log(prodFiles + testFiles + 1) * 2.0;
+
+        double subtotal = scanTime + readTime + thinkTime + structuralTime+ fileSwitchCost;
 
         // 5. FATIGUE MULTIPLIER
         //    SmartBear: beyond 60 min, defect detection falls 40%.
         //    Multiplier models this non-linearly but conservatively.
         double multiplier = getFatigueMultiplier(level);
+
 
         double total   = subtotal * multiplier;
         int    minutes = (int) Math.round(total);

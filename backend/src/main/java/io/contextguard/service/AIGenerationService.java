@@ -184,7 +184,7 @@ public class AIGenerationService {
         // ── SECTION 1: PR IDENTITY ─────────────────────────────────────────────
         p.append("\nPR CONTEXT\n");
         p.append("Title:       ").append(safe(metadata.getTitle())).append("\n");
-        p.append("Description: ").append(truncate(safe(metadata.getBody()), 400)).append("\n");
+//        p.append("Description: ").append(truncate(safe(metadata.getBody()), 400)).append("\n");
         p.append("Branch:      ").append(safe(metadata.getBaseBranch()))
                 .append(" ← ").append(safe(metadata.getHeadBranch())).append("\n");
         p.append("Author:      ").append(safe(metadata.getAuthor())).append("\n\n");

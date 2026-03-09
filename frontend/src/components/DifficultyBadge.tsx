@@ -59,11 +59,6 @@ export const DifficultyBadge: React.FC<{
           {reviewerGuidance}
         </p>
       )}
-
-      {/* Scale reference */}
-      <div className={`text-xs ${textMuted}`}>
-        TRIVIAL &lt;8m · EASY &lt;25m · MODERATE &lt;50m · HARD &lt;90m · VERY_HARD 90m+
-      </div>
     </div>
   );
 };

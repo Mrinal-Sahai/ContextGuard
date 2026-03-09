@@ -377,7 +377,7 @@ public class CriticalPathDetector {
     // ─────────────────────────────────────────────────────────────────────────
 
     public static CriticalityBand interpretBand(int score) {
-        if (score <= 2)  return CriticalityBand.LOW;
+        if (score <= 3)  return CriticalityBand.LOW;
         if (score <= 5)  return CriticalityBand.NOTABLE;
         if (score <= 8)  return CriticalityBand.CRITICAL;
         return CriticalityBand.SEVERE;
