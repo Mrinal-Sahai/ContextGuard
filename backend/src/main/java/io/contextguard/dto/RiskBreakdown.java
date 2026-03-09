@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @Builder
 @AllArgsConstructor
@@ -21,6 +23,7 @@ public class RiskBreakdown {
     private double rawComplexityDelta;
     private double rawCriticalDensity;
     private double rawTestCoverageGap;
+    private List<SignalInterpretation> signals;
 
 
 

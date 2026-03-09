@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -21,4 +23,5 @@ public class DifficultyBreakdown {
     private double rawLayerCount;
     private double rawDomainCount;
     private double rawCriticalCount;
+    private List<SignalInterpretation> signals;
 }
