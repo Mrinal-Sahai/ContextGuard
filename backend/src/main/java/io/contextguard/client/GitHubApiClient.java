@@ -137,7 +137,7 @@ public class GitHubApiClient {
         return new HttpEntity<>(headers);
     }
 
-    public String getFileContent(String fullRepoName, String path, String ref) {
+    public String getFileContent(String fullRepoName, String path, String ref, String token) {
 
         try {
             // Encode path safely WITHOUT encoding '/'

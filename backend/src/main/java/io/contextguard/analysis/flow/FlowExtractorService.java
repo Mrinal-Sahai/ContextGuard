@@ -4,23 +4,22 @@ import io.contextguard.dto.DiffMetrics;
 import io.contextguard.dto.PRIdentifier;
 import io.contextguard.dto.PRIntelligenceResponse;
 import io.contextguard.dto.PRMetadata;
+import io.contextguard.model.PRAnalysisResult;
+import io.contextguard.repository.PRAnalysisRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
- * ═══════════════════════════════════════════════════════════════════════════════
- * FLOW EXTRACTOR SERVICE — AST-BACKED CALL GRAPH DIFFERENTIAL
- * ═══════════════════════════════════════════════════════════════════════════════
+ * Production-grade flow extractor with full AST parsing.
  *
  * PIPELINE:
- *   1. Parse BASE branch via ASTParserService → baseGraph
- *   2. Parse HEAD branch via ASTParserService → headGraph
- *   3. Compute full differential (nodes: added/removed/modified/unchanged;
  *      edges: added/removed/unchanged)
  *   4. Compute AST-grade GraphMetrics
  *   5. *** CRITICALLY: feed AST-derived metrics BACK into DiffMetrics ***
@@ -102,80 +101,425 @@ public class FlowExtractorService {
     private static final Logger logger = LoggerFactory.getLogger(FlowExtractorService.class);
 
     private final ASTParserService astParser;
+    private final PRAnalysisRepository repo ;
 
-    public FlowExtractorService(ASTParserService astParser) {
+    public FlowExtractorService( ASTParserService astParser, PRAnalysisRepository repo) {
         this.astParser = astParser;
+        this.repo = repo;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PRIMARY ENTRY POINT
-    // ─────────────────────────────────────────────────────────────────────────
-
     /**
-     * Generate call graph differential and — critically — feed AST-accurate
-     * metrics back into intelligence.getMetrics() so that downstream engines
-     * (RiskScoringEngine, DifficultyScoringEngine) use real complexity data.
+     * Generate accurate call graph diff.
+     *
+     * @param prMetadata PR metadata with repo URL and branches
+     * @param githubToken GitHub personal access token (can be null for public repos)
+     * @return CallGraphDiff with method-level accuracy
      */
-    public CallGraphDiff generateDiagram(
-            PRIntelligenceResponse intelligence,
-            PRMetadata prMetadata,
-            String githubToken,
-            PRIdentifier prId,
-            List<String> files) {
+    public CallGraphDiff
+    generateDiagram(PRIntelligenceResponse intelligence, PRMetadata prMetadata, String githubToken, PRIdentifier prId, List<String> files) {
 
-        // ── Step 1: Parse base branch ─────────────────────────────────────────
-        logger.info("AST parsing base branch: {} @ {}", prMetadata.getBaseBranch(), prMetadata.getBaseSha());
-        ASTParserService.ParsedCallGraph baseGraph =
-                astParser.parseDirectoryFromGithub(prMetadata.getBaseRepo(), prMetadata.getBaseSha(), files);
+        // Step 1: Parse base branch
+        // FIX BUG-NONDET-1: githubToken is now passed through so GitHub API calls are
+        // authenticated (5,000 req/hr) instead of unauthenticated (60 req/hr shared).
+        // Previously githubToken was received but silently dropped here.
+        logger.info("Parsing base branch: {}", prMetadata.getBaseBranch());
+        ASTParserService.ParsedCallGraph baseGraph = astParser.parseDirectoryFromGithub(
+                prMetadata.getBaseRepo(), prMetadata.getBaseSha(), files, githubToken);
 
-        // ── Step 2: Parse head branch ─────────────────────────────────────────
-        logger.info("AST parsing head branch: {} @ {}", prMetadata.getHeadBranch(), prMetadata.getHeadSha());
-        ASTParserService.ParsedCallGraph headGraph =
-                astParser.parseDirectoryFromGithub(prMetadata.getHeadRepo(), prMetadata.getHeadSha(), files);
+        // Step 2: Parse head branch
+        logger.info("Parsing head branch: {}", prMetadata.getHeadBranch());
+        ASTParserService.ParsedCallGraph headGraph = astParser.parseDirectoryFromGithub(
+                prMetadata.getHeadRepo(), prMetadata.getHeadSha(), files, githubToken);
 
-        logger.info("Parsed: base={} nodes/{} edges, head={} nodes/{} edges",
-                baseGraph.nodes.size(), baseGraph.edges.size(),
-                headGraph.nodes.size(), headGraph.edges.size());
-
-        // ── Step 3: Compute call graph differential ───────────────────────────
+        // Step 3: Compute differential
+        logger.info("Computing differential: base={} nodes, head={} nodes",
+                baseGraph.nodes.size(), headGraph.nodes.size());
         CallGraphDiff diff = computeDifferential(baseGraph, headGraph);
 
         diff.setGraphType("METHOD_LEVEL");
         diff.setVerificationStatus("FULL_AST_ANALYSIS");
         diff.setVerificationNotes(String.format(
-                "Full AST parsing completed. Analyzed %d changed files across %d language(s): %s",
-                files.size(),
+                "Full AST parsing completed. Analyzed %d files across %d languages: %s",
+                baseGraph.fileCountByLanguage.values().stream().mapToInt(Integer::intValue).sum() +
+                        headGraph.fileCountByLanguage.values().stream().mapToInt(Integer::intValue).sum(),
                 headGraph.languages.size(),
-                String.join(", ", headGraph.languages)));
+                String.join(", ", headGraph.languages)
+        ));
+
+        // Set detected languages
         diff.setLanguagesDetected(new ArrayList<>(headGraph.languages));
 
-        // ── Step 4: Feed AST metrics back into DiffMetrics ───────────────────
-        // This replaces the early diff-line heuristic with AST-accurate values.
+        // Step 4: Feed AST-accurate metrics back into DiffMetrics.
+        // This replaces the early heuristic values (rawCognitiveDelta=25 from ComplexityEstimator)
+        // with method-level accurate values from the full AST parse.
+        // Must run AFTER computeDifferential() so nodesAdded/Modified/Removed are populated.
         feedbackASTMetricsIntoDiffMetrics(intelligence.getMetrics(), baseGraph, headGraph, diff);
 
-        logger.info("Differential: +{} added / ~{} modified / -{} removed nodes, +{} new edges",
-                safeSize(diff.getNodesAdded()),
-                safeSize(diff.getNodesModified()),
-                safeSize(diff.getNodesRemoved()),
-                safeSize(diff.getEdgesAdded()));
+        logger.info("Differential computed: {} added, {} removed, {} modified nodes",
+                diff.getNodesAdded().size(),
+                diff.getNodesRemoved().size(),
+                diff.getNodesModified().size());
 
         return diff;
+
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // AST METRICS FEEDBACK — THE KEY NEW CONTRIBUTION
-    // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * Compute differential between base and head graphs.
+     *
+     * ALGORITHM:
+     * Nodes:
+     * - In head but not base → ADDED
+     * - In base but not head → REMOVED
+     * - In both with different properties → MODIFIED
+     * - In both unchanged → UNCHANGED
+     *
+     * Edges:
+     * - Build edge signature sets from both graphs
+     * - Compare signatures to determine ADDED/REMOVED/UNCHANGED
+     */
+    private CallGraphDiff computeDifferential(
+            ASTParserService.ParsedCallGraph baseGraph,
+            ASTParserService.ParsedCallGraph headGraph) {
+
+        Set<String> baseNodeIds = baseGraph.nodes.keySet();
+        Set<String> headNodeIds = headGraph.nodes.keySet();
+
+        List<FlowNode> nodesAdded = headNodeIds.stream()
+                                            .filter(id -> !baseNodeIds.contains(id))
+                                            .map(id -> {
+                                                FlowNode node = headGraph.nodes.get(id);
+                                                node.setStatus(FlowNode.NodeStatus.ADDED);
+                                                return node;
+                                            })
+                                            .collect(Collectors.toList());
+
+        List<FlowNode> nodesRemoved = baseNodeIds.stream()
+                                              .filter(id -> !headNodeIds.contains(id))
+                                              .map(id -> {
+                                                  FlowNode node = baseGraph.nodes.get(id);
+                                                  node.setStatus(FlowNode.NodeStatus.REMOVED);
+                                                  return node;
+                                              })
+                                              .collect(Collectors.toList());
+
+        List<FlowNode> nodesModified = new ArrayList<>();
+        List<FlowNode> nodesUnchanged = new ArrayList<>();
+
+        for (String id : headNodeIds) {
+            if (baseNodeIds.contains(id)) {
+                FlowNode baseNode = baseGraph.nodes.get(id);
+                FlowNode headNode = headGraph.nodes.get(id);
+
+                if (isNodeModified(baseNode, headNode)) {
+                    headNode.setStatus(FlowNode.NodeStatus.MODIFIED);
+                    nodesModified.add(headNode);
+                } else {
+                    headNode.setStatus(FlowNode.NodeStatus.UNCHANGED);
+                    nodesUnchanged.add(headNode);
+                }
+            }
+        }
+
+        // ==========================================
+        // COMPUTE EDGE DIFFERENCES
+        // ==========================================
+
+        // Create edge signature maps for comparison
+        Map<String, FlowEdge> baseEdgeMap = createEdgeSignatureMap(baseGraph.edges);
+        Map<String, FlowEdge> headEdgeMap = createEdgeSignatureMap(headGraph.edges);
+
+        Set<String> baseEdgeSigs = baseEdgeMap.keySet();
+        Set<String> headEdgeSigs = headEdgeMap.keySet();
+
+        List<FlowEdge> edgesAdded = headEdgeSigs.stream()
+                                            .filter(sig -> !baseEdgeSigs.contains(sig))
+                                            .map(sig -> {
+                                                FlowEdge edge = headEdgeMap.get(sig);
+                                                edge.setStatus(FlowEdge.EdgeStatus.ADDED);
+                                                return edge;
+                                            })
+                                            .collect(Collectors.toList());
+
+        List<FlowEdge> edgesRemoved = baseEdgeSigs.stream()
+                                              .filter(sig -> !headEdgeSigs.contains(sig))
+                                              .map(sig -> {
+                                                  FlowEdge edge = baseEdgeMap.get(sig);
+                                                  edge.setStatus(FlowEdge.EdgeStatus.REMOVED);
+                                                  return edge;
+                                              })
+                                              .collect(Collectors.toList());
+
+        List<FlowEdge> edgesUnchanged = headEdgeSigs.stream()
+                                                .filter(baseEdgeSigs::contains)
+                                                .map(sig -> {
+                                                    FlowEdge edge = headEdgeMap.get(sig);
+                                                    edge.setStatus(FlowEdge.EdgeStatus.UNCHANGED);
+                                                    return edge;
+                                                })
+                                                .collect(Collectors.toList());
+
+        // ==========================================
+        // COMPUTE METRICS
+        // ==========================================
+
+        CallGraphDiff.GraphMetrics metrics = computeGraphMetrics(
+                nodesAdded, nodesRemoved, nodesModified, nodesUnchanged,
+                edgesAdded, edgesRemoved, edgesUnchanged);
+
+        return CallGraphDiff.builder()
+                       .nodesAdded(nodesAdded)
+                       .nodesRemoved(nodesRemoved)
+                       .nodesModified(nodesModified)
+                       .nodesUnchanged(nodesUnchanged)
+                       .edgesAdded(edgesAdded)
+                       .edgesRemoved(edgesRemoved)
+                       .edgesUnchanged(edgesUnchanged)
+                       .metrics(metrics)
+                       .languagesDetected(new ArrayList<>(headGraph.languages))
+                       .build();
+    }
 
     /**
-     * Feed AST-derived metrics into DiffMetrics, replacing heuristic estimates.
+     * Create edge signature map for comparison.
      *
-     * Metrics updated:
-     *  1. complexityDelta        — AST CC delta (method-level, precise)
-     *  2. maxCallDepth           — longest changed call chain
-     *  3. hotspotMethodIds       — highest-centrality changed methods
-     *  4. avgChangedMethodCC     — avg CC of changed methods only
-     *  5. removedPublicMethods   — count of removed public-facing methods
-     *  6. addedPublicMethods     — count of new public-facing methods
+     * Edge signature = "from -> to"
+     * This allows us to compare edges across base and head graphs.
+     */
+    private Map<String, FlowEdge> createEdgeSignatureMap(List<FlowEdge> edges) {
+        Map<String, FlowEdge> map = new HashMap<>();
+
+        for (FlowEdge edge : edges) {
+            String signature = edge.getFrom() + " -> " + edge.getTo();
+            map.put(signature, edge);
+        }
+
+        return map;
+    }
+
+    /**
+     * Determine if node was modified.
+     *
+     * A node is considered modified if:
+     * - Cyclomatic complexity changed
+     * - Line count changed significantly (>10%)
+     * - Annotations changed
+     */
+    private boolean isNodeModified(FlowNode base, FlowNode head) {
+
+        // Complexity changed
+        if (base.getCyclomaticComplexity() != head.getCyclomaticComplexity()) {
+            return true;
+        }
+
+        // Line count changed significantly
+        int baseLoc = base.getEndLine() - base.getStartLine();
+        int headLoc = head.getEndLine() - head.getStartLine();
+        double changePercent = Math.abs(headLoc - baseLoc) / (double) Math.max(1, baseLoc);
+        if (changePercent > 0.1) { // >10% change
+            return true;
+        }
+
+        // Annotations changed
+        if (!Objects.equals(base.getAnnotations(), head.getAnnotations())) {
+            return true;
+        }
+
+        // Return type changed
+        if (!Objects.equals(base.getReturnType(), head.getReturnType())) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Compute graph-level metrics.
+     */
+    private CallGraphDiff.GraphMetrics computeGraphMetrics(
+            List<FlowNode> added, List<FlowNode> removed,
+            List<FlowNode> modified, List<FlowNode> unchanged,
+            List<FlowEdge> edgesAdded, List<FlowEdge> edgesRemoved,
+            List<FlowEdge> edgesUnchanged) {
+
+        // Combine all current nodes
+        List<FlowNode> allNodes = new ArrayList<>();
+        allNodes.addAll(added);
+        allNodes.addAll(modified);
+        allNodes.addAll(unchanged);
+
+        // Average complexity
+        double avgComplexity = allNodes.stream()
+                                       .mapToInt(FlowNode::getCyclomaticComplexity)
+                                       .average()
+                                       .orElse(0.0);
+
+        // Find hotspots (modified nodes with highest centrality)
+        List<String> hotspots = allNodes.stream()
+                                        .filter(n -> n.getStatus() == FlowNode.NodeStatus.MODIFIED)
+                                        .sorted((a, b) -> Double.compare(b.getCentrality(), a.getCentrality()))
+                                        .limit(5)
+                                        .map(FlowNode::getId)
+                                        .collect(Collectors.toList());
+
+        // Compute max call depth (simplified - just find longest path)
+        int maxDepth = computeMaxCallDepth(allNodes, edgesUnchanged);
+
+        // Call distribution (methods with most calls)
+        Map<String, Integer> callDistribution = new HashMap<>();
+        for (FlowNode node : allNodes) {
+            callDistribution.put(node.getId(), node.getInDegree());
+        }
+
+        return CallGraphDiff.GraphMetrics.builder()
+                       .totalNodes(allNodes.size())
+                       .totalEdges(edgesAdded.size() + edgesRemoved.size() + edgesUnchanged.size())
+                       .maxDepth(maxDepth)
+                       .avgComplexity(avgComplexity)
+                       .hotspots(hotspots)
+                       .callDistribution(callDistribution)
+                       .build();
+    }
+
+    /**
+     * Compute maximum call depth (longest path in call graph).
+     *
+     * Uses BFS to find longest path from entry points.
+     */
+    private int computeMaxCallDepth(List<FlowNode> nodes, List<FlowEdge> edges) {
+
+        // Build adjacency list
+        Map<String, List<String>> graph = new HashMap<>();
+        for (FlowEdge edge : edges) {
+            graph.computeIfAbsent(edge.getFrom(), k -> new ArrayList<>()).add(edge.getTo());
+        }
+
+        // Find entry points (nodes with no incoming edges)
+        Set<String> hasIncoming = edges.stream()
+                                          .map(FlowEdge::getTo)
+                                          .collect(Collectors.toSet());
+
+        List<String> entryPoints = nodes.stream()
+                                           .map(FlowNode::getId)
+                                           .filter(id -> !hasIncoming.contains(id))
+                                           .collect(Collectors.toList());
+
+        // BFS from each entry point
+        int maxDepth = 0;
+        for (String entry : entryPoints) {
+            int depth = bfsMaxDepth(entry, graph);
+            maxDepth = Math.max(maxDepth, depth);
+        }
+
+        return maxDepth;
+    }
+
+    /**
+     * BFS to find max depth from a starting node.
+     */
+    private int bfsMaxDepth(String start, Map<String, List<String>> graph) {
+
+        Queue<NodeDepth> queue = new LinkedList<>();
+        Set<String> visited = new HashSet<>();
+
+        queue.offer(new NodeDepth(start, 0));
+        visited.add(start);
+
+        int maxDepth = 0;
+
+        while (!queue.isEmpty()) {
+            NodeDepth current = queue.poll();
+            maxDepth = Math.max(maxDepth, current.depth);
+
+            List<String> neighbors = graph.getOrDefault(current.nodeId, Collections.emptyList());
+            for (String neighbor : neighbors) {
+                if (!visited.contains(neighbor)) {
+                    visited.add(neighbor);
+                    queue.offer(new NodeDepth(neighbor, current.depth + 1));
+                }
+            }
+        }
+
+        return maxDepth;
+    }
+
+    /**
+     * Helper class for BFS traversal.
+     */
+    private static class NodeDepth {
+        String nodeId;
+        int depth;
+
+        NodeDepth(String nodeId, int depth) {
+            this.nodeId = nodeId;
+            this.depth = depth;
+        }
+    }
+
+    /**
+     * Extract repository clone URL from PR URL.
+     *
+     * Example: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
+     */
+    public String extractRepoUrl(String prUrl) {
+        try {
+            String[] parts = prUrl.split("/");
+            if (parts.length >= 5) {
+                return String.format("https://github.com/%s/%s.git", parts[3], parts[4]);
+            }
+            throw new IllegalArgumentException("Invalid PR URL format");
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to extract repository URL from: " + prUrl, e);
+        }
+    }
+
+    /**
+     * Create fallback diff when full analysis fails.
+     */
+    private CallGraphDiff createFallbackDiff(String reason) {
+        logger.warn("Creating fallback diff: {}", reason);
+
+        return CallGraphDiff.builder()
+                       .graphType("MODULE_LEVEL")
+                       .verificationStatus("FALLBACK_HEURISTIC")
+                       .verificationNotes("Full analysis failed: " + reason + ". Using module-level heuristics.")
+                       .nodesAdded(Collections.emptyList())
+                       .nodesRemoved(Collections.emptyList())
+                       .nodesModified(Collections.emptyList())
+                       .nodesUnchanged(Collections.emptyList())
+                       .edgesAdded(Collections.emptyList())
+                       .edgesRemoved(Collections.emptyList())
+                       .edgesUnchanged(Collections.emptyList())
+                       .metrics(CallGraphDiff.GraphMetrics.builder()
+                                        .totalNodes(0)
+                                        .totalEdges(0)
+                                        .maxDepth(0)
+                                        .avgComplexity(0.0)
+                                        .hotspots(Collections.emptyList())
+                                        .callDistribution(Collections.emptyMap())
+                                        .build())
+                       .languagesDetected(Collections.emptyList())
+                       .build();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AST METRICS FEEDBACK INTO DiffMetrics
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Feed all AST-derived metrics back into DiffMetrics, replacing the early
+     * heuristic values that were computed before the AST parse ran.
+     *
+     * Metrics written:
+     *   1. complexityDelta      — AST CC delta (replaces ComplexityEstimator heuristic)
+     *   2. maxCallDepth         — longest call chain in the changed subgraph
+     *   3. hotspotMethodIds     — top-5 changed methods by centrality
+     *   4. avgChangedMethodCC   — average CC of added + modified methods only
+     *   5. removedPublicMethods — non-void methods removed from public API surface
+     *   6. addedPublicMethods   — non-void methods added to public API surface
+     *
+     * MUST be called AFTER computeDifferential() so that nodesAdded/Modified/Removed
+     * are populated on the diff object.
      */
     private void feedbackASTMetricsIntoDiffMetrics(
             DiffMetrics metrics,
@@ -202,7 +546,10 @@ public class FlowExtractorService {
         int maxDepth = computeMaxCallDepth(changedNodes, changedEdges);
         metrics.setMaxCallDepth(maxDepth);
 
-        // 3. Hotspot methods (changed nodes sorted by centrality)
+        // 3. Hotspot methods — changed nodes sorted by centrality (inDegree + outDegree)
+        //    These are the "load-bearing" methods: a bug here propagates to the most callers.
+        //    Research: Zimmermann et al. (2008) — high-centrality nodes disproportionately
+        //    propagate defects in call graphs.
         List<String> hotspots = changedNodes.stream()
                                         .sorted(Comparator.comparingDouble(FlowNode::getCentrality).reversed())
                                         .limit(5)
@@ -210,321 +557,71 @@ public class FlowExtractorService {
                                         .collect(Collectors.toList());
         metrics.setHotspotMethodIds(hotspots);
 
-        // 4. Average CC of changed methods
+        // 4. Average CC of changed methods only (added + modified).
+        //    Unchanged methods are deliberately excluded — they are noise for review effort
+        //    estimation. A PR that touches 1 complex method in a 500-method class should
+        //    not have its avgCC diluted by the 499 untouched methods.
         double avgChangedCC = changedNodes.stream()
                                       .mapToInt(FlowNode::getCyclomaticComplexity)
                                       .average()
                                       .orElse(0.0);
         metrics.setAvgChangedMethodCC(Math.round(avgChangedCC * 100.0) / 100.0);
 
-        // 5 & 6. Public method surface changes (return type != void, no annotation filter for now)
+        // 5 & 6. Public API surface changes.
+        //    "Public" proxy: return type is not void.
+        //    A non-void method has callers that depend on its return value.
+        //    Removing one is a breaking change; adding one expands the API surface.
         long removedPublic = safeList(diff.getNodesRemoved()).stream()
-                                     .filter(n -> !"void".equalsIgnoreCase(n.getReturnType()))
+                                     .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
                                      .count();
         long addedPublic = safeList(diff.getNodesAdded()).stream()
-                                   .filter(n -> !"void".equalsIgnoreCase(n.getReturnType()))
+                                   .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
                                    .count();
         metrics.setRemovedPublicMethods((int) removedPublic);
         metrics.setAddedPublicMethods((int) addedPublic);
 
-        logger.debug("AST feedback: complexityDelta={}, maxDepth={}, hotspots={}, avgCC={:.2f}, " +
-                             "removedPublic={}, addedPublic={}",
-                astComplexityDelta, maxDepth, hotspots.size(), avgChangedCC,
-                removedPublic, addedPublic);
+        logger.debug("AST feedback complete: complexityDelta={}, maxDepth={}, hotspots={}, " +
+                             "avgCC={}, removedPublic={}, addedPublic={}",
+                astComplexityDelta, maxDepth, hotspots.size(),
+                metrics.getAvgChangedMethodCC(), removedPublic, addedPublic);
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // COMPLEXITY DELTA — AST-ACCURATE
-    // ─────────────────────────────────────────────────────────────────────────
+    private <T> List<T> safeList(List<T> list) { return list != null ? list : Collections.emptyList(); }
 
     /**
-     * Compute precise cyclomatic complexity delta from AST graphs.
+     * Compute precise cyclomatic complexity delta from the two AST graphs.
      *
      * Rules:
-     *   Added methods    → +full CC of new method
-     *   Removed methods  → -full CC of removed method
-     *   Modified methods → +(headCC - baseCC), positive or negative
-     *   Unchanged        → 0 (no contribution)
-     *
-     * This is superior to diff-line heuristics because:
-     *   - It counts the correct AST nodes (ForEachStmt, CatchClause, BinaryExpr)
-     *   - It correctly handles the base=1 per method (McCabe 1976: CC starts at 1)
-     *   - String literals / comments cannot pollute the count
-     *   - Renamed methods are tracked properly (same ID in both graphs = modified)
+     *   Added methods   → +full CC of new method (new cognitive load introduced)
+     *   Removed methods → −full CC of removed method (cognitive load relieved)
+     *   Modified methods → +(headCC − baseCC), positive or negative
+     *   Unchanged        → 0 (not counted — they are not part of this PR)
      */
     private int computeComplexityDelta(
             ASTParserService.ParsedCallGraph baseGraph,
             ASTParserService.ParsedCallGraph headGraph) {
 
-        Set<String> baseIds   = baseGraph.nodes.keySet();
-        Set<String> headIds   = headGraph.nodes.keySet();
+        Map<String, FlowNode> baseNodes = baseGraph.nodes;
+        Map<String, FlowNode> headNodes = headGraph.nodes;
 
-        Set<String> addedIds   = headIds.stream().filter(id -> !baseIds.contains(id)).collect(Collectors.toSet());
-        Set<String> removedIds = baseIds.stream().filter(id -> !headIds.contains(id)).collect(Collectors.toSet());
-        Set<String> commonIds  = headIds.stream().filter(baseIds::contains).collect(Collectors.toSet());
+        Set<String> addedIds = new HashSet<>(headNodes.keySet());
+        addedIds.removeAll(baseNodes.keySet());
+
+        Set<String> removedIds = new HashSet<>(baseNodes.keySet());
+        removedIds.removeAll(headNodes.keySet());
+
+        Set<String> commonIds = new HashSet<>(headNodes.keySet());
+        commonIds.retainAll(baseNodes.keySet());
 
         int delta = 0;
 
-        // Added methods: their full complexity is new cognitive load
-        for (String id : addedIds) {
-            delta += headGraph.nodes.get(id).getCyclomaticComplexity();
-        }
-
-        // Removed methods: their complexity is relieved
-        for (String id : removedIds) {
-            delta -= baseGraph.nodes.get(id).getCyclomaticComplexity();
-        }
-
-        // Modified methods: only the net change
+        for (String id : addedIds)   delta += headNodes.get(id).getCyclomaticComplexity();
+        for (String id : removedIds) delta -= baseNodes.get(id).getCyclomaticComplexity();
         for (String id : commonIds) {
-            int headCC = headGraph.nodes.get(id).getCyclomaticComplexity();
-            int baseCC = baseGraph.nodes.get(id).getCyclomaticComplexity();
-            delta += (headCC - baseCC);
+            delta += headNodes.get(id).getCyclomaticComplexity()
+                             - baseNodes.get(id).getCyclomaticComplexity();
         }
 
         return delta;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // DIFFERENTIAL COMPUTATION
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private CallGraphDiff computeDifferential(
-            ASTParserService.ParsedCallGraph base,
-            ASTParserService.ParsedCallGraph head) {
-
-        Set<String> baseIds = base.nodes.keySet();
-        Set<String> headIds = head.nodes.keySet();
-
-        // ── Nodes ─────────────────────────────────────────────────────────────
-        List<FlowNode> nodesAdded = headIds.stream()
-                                            .filter(id -> !baseIds.contains(id))
-                                            .map(id -> { FlowNode n = head.nodes.get(id); n.setStatus(FlowNode.NodeStatus.ADDED); return n; })
-                                            .collect(Collectors.toList());
-
-        List<FlowNode> nodesRemoved = baseIds.stream()
-                                              .filter(id -> !headIds.contains(id))
-                                              .map(id -> { FlowNode n = base.nodes.get(id); n.setStatus(FlowNode.NodeStatus.REMOVED); return n; })
-                                              .collect(Collectors.toList());
-
-        List<FlowNode> nodesModified  = new ArrayList<>();
-        List<FlowNode> nodesUnchanged = new ArrayList<>();
-
-        for (String id : headIds) {
-            if (!baseIds.contains(id)) continue;
-            FlowNode baseNode = base.nodes.get(id);
-            FlowNode headNode = head.nodes.get(id);
-            if (isNodeModified(baseNode, headNode)) {
-                headNode.setStatus(FlowNode.NodeStatus.MODIFIED);
-                nodesModified.add(headNode);
-            } else {
-                headNode.setStatus(FlowNode.NodeStatus.UNCHANGED);
-                nodesUnchanged.add(headNode);
-            }
-        }
-
-        // ── Edges ─────────────────────────────────────────────────────────────
-        Map<String, FlowEdge> baseEdgeMap = toEdgeMap(base.edges);
-        Map<String, FlowEdge> headEdgeMap = toEdgeMap(head.edges);
-
-        List<FlowEdge> edgesAdded = headEdgeMap.entrySet().stream()
-                                            .filter(e -> !baseEdgeMap.containsKey(e.getKey()))
-                                            .map(e -> { e.getValue().setStatus(FlowEdge.EdgeStatus.ADDED); return e.getValue(); })
-                                            .collect(Collectors.toList());
-
-        List<FlowEdge> edgesRemoved = baseEdgeMap.entrySet().stream()
-                                              .filter(e -> !headEdgeMap.containsKey(e.getKey()))
-                                              .map(e -> { e.getValue().setStatus(FlowEdge.EdgeStatus.REMOVED); return e.getValue(); })
-                                              .collect(Collectors.toList());
-
-        List<FlowEdge> edgesUnchanged = headEdgeMap.entrySet().stream()
-                                                .filter(e -> baseEdgeMap.containsKey(e.getKey()))
-                                                .map(e -> { e.getValue().setStatus(FlowEdge.EdgeStatus.UNCHANGED); return e.getValue(); })
-                                                .collect(Collectors.toList());
-
-        // ── Graph Metrics ──────────────────────────────────────────────────────
-        CallGraphDiff.GraphMetrics metrics = computeGraphMetrics(
-                nodesAdded, nodesRemoved, nodesModified, nodesUnchanged,
-                edgesAdded, edgesRemoved, edgesUnchanged);
-
-        return CallGraphDiff.builder()
-                       .nodesAdded(nodesAdded)
-                       .nodesRemoved(nodesRemoved)
-                       .nodesModified(nodesModified)
-                       .nodesUnchanged(nodesUnchanged)
-                       .edgesAdded(edgesAdded)
-                       .edgesRemoved(edgesRemoved)
-                       .edgesUnchanged(edgesUnchanged)
-                       .metrics(metrics)
-                       .build();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // NODE MODIFICATION DETECTION
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Determine if a node was meaningfully modified between base and head.
-     *
-     * Criteria (see class-level javadoc for research backing):
-     *   1. Cyclomatic complexity changed
-     *   2. LOC changed by > 10%
-     *   3. Return type changed (API contract)
-     *   4. Annotations changed (runtime behavior, e.g. @Transactional)
-     */
-    private boolean isNodeModified(FlowNode base, FlowNode head) {
-        // 1. Complexity change
-        if (base.getCyclomaticComplexity() != head.getCyclomaticComplexity()) return true;
-
-        // 2. LOC change > 10%
-        int baseLoc = Math.max(1, base.getEndLine() - base.getStartLine());
-        int headLoc = Math.max(1, head.getEndLine() - head.getStartLine());
-        double pctChange = Math.abs(headLoc - baseLoc) / (double) baseLoc;
-        if (pctChange > 0.10) return true;
-
-        // 3. Return type changed
-        if (!Objects.equals(base.getReturnType(), head.getReturnType())) return true;
-
-        // 4. Annotations changed
-        if (!Objects.equals(base.getAnnotations(), head.getAnnotations())) return true;
-
-        return false;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // GRAPH METRICS COMPUTATION
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private CallGraphDiff.GraphMetrics computeGraphMetrics(
-            List<FlowNode> added, List<FlowNode> removed,
-            List<FlowNode> modified, List<FlowNode> unchanged,
-            List<FlowEdge> edgesAdded, List<FlowEdge> edgesRemoved,
-            List<FlowEdge> edgesUnchanged) {
-
-        List<FlowNode> currentNodes = new ArrayList<>();
-        currentNodes.addAll(added);
-        currentNodes.addAll(modified);
-        currentNodes.addAll(unchanged);
-
-        // Average complexity of CHANGED nodes (not all nodes — see class docs)
-        double avgChangedComplexity = Stream.concat(added.stream(), modified.stream())
-                                              .mapToInt(FlowNode::getCyclomaticComplexity)
-                                              .average()
-                                              .orElse(0.0);
-
-        // Hotspots: modified nodes with highest centrality
-        List<String> hotspots = Stream.concat(added.stream(), modified.stream())
-                                        .sorted(Comparator.comparingDouble(FlowNode::getCentrality).reversed())
-                                        .limit(5)
-                                        .map(FlowNode::getId)
-                                        .collect(Collectors.toList());
-
-        // Max call depth in changed edges
-        List<FlowNode> changedNodes = new ArrayList<>(added);
-        changedNodes.addAll(modified);
-        int maxDepth = computeMaxCallDepth(changedNodes, edgesAdded);
-
-        // Call distribution (in-degree per node)
-        Map<String, Integer> callDistribution = new LinkedHashMap<>();
-        currentNodes.stream()
-                .sorted(Comparator.comparingInt(FlowNode::getInDegree).reversed())
-                .limit(20)
-                .forEach(n -> callDistribution.put(n.getId(), n.getInDegree()));
-
-        return CallGraphDiff.GraphMetrics.builder()
-                       .totalNodes(currentNodes.size())
-                       .totalEdges(edgesAdded.size() + edgesRemoved.size() + edgesUnchanged.size())
-                       .maxDepth(maxDepth)
-                       .avgComplexity(Math.round(avgChangedComplexity * 100.0) / 100.0)
-                       .hotspots(hotspots)
-                       .callDistribution(callDistribution)
-                       .build();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // MAX CALL DEPTH (BFS on changed subgraph)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private int computeMaxCallDepth(List<FlowNode> nodes, List<FlowEdge> edges) {
-        Map<String, List<String>> adj = new HashMap<>();
-        for (FlowEdge e : edges) {
-            adj.computeIfAbsent(e.getFrom(), k -> new ArrayList<>()).add(e.getTo());
-        }
-
-        Set<String> hasIncoming = edges.stream().map(FlowEdge::getTo).collect(Collectors.toSet());
-        List<String> entryPoints = nodes.stream()
-                                           .map(FlowNode::getId)
-                                           .filter(id -> !hasIncoming.contains(id))
-                                           .collect(Collectors.toList());
-
-        int maxDepth = 0;
-        for (String entry : entryPoints) {
-            maxDepth = Math.max(maxDepth, bfsMaxDepth(entry, adj));
-        }
-        return maxDepth;
-    }
-
-    private int bfsMaxDepth(String start, Map<String, List<String>> adj) {
-        Queue<AbstractMap.SimpleEntry<String, Integer>> queue = new LinkedList<>();
-        Set<String> visited = new HashSet<>();
-        queue.offer(new AbstractMap.SimpleEntry<>(start, 0));
-        visited.add(start);
-        int max = 0;
-        while (!queue.isEmpty()) {
-            var cur = queue.poll();
-            max = Math.max(max, cur.getValue());
-            for (String next : adj.getOrDefault(cur.getKey(), List.of())) {
-                if (!visited.contains(next)) {
-                    visited.add(next);
-                    queue.offer(new AbstractMap.SimpleEntry<>(next, cur.getValue() + 1));
-                }
-            }
-        }
-        return max;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // UTILITIES
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private Map<String, FlowEdge> toEdgeMap(List<FlowEdge> edges) {
-        Map<String, FlowEdge> map = new LinkedHashMap<>();
-        for (FlowEdge e : edges) {
-            map.put(e.getFrom() + " -> " + e.getTo(), e);
-        }
-        return map;
-    }
-
-    private int safeSize(List<?> list) { return list != null ? list.size() : 0; }
-
-    private <T> List<T> safeList(List<T> list) { return list != null ? list : Collections.emptyList(); }
-
-    // Import java.util.stream.Stream used above — ensure this import is present
-    private static <T> java.util.stream.Stream<T> Stream(List<T> list) {
-        return list.stream();
-    }
-
-    /**
-     * Fallback: returns an empty diff when AST parsing fails.
-     */
-    public CallGraphDiff createFallbackDiff(String reason) {
-        logger.warn("Creating fallback diff: {}", reason);
-        return CallGraphDiff.builder()
-                       .graphType("MODULE_LEVEL")
-                       .verificationStatus("FALLBACK_HEURISTIC")
-                       .verificationNotes("Full analysis failed: " + reason + ". Using module-level heuristics.")
-                       .nodesAdded(Collections.emptyList())
-                       .nodesRemoved(Collections.emptyList())
-                       .nodesModified(Collections.emptyList())
-                       .nodesUnchanged(Collections.emptyList())
-                       .edgesAdded(Collections.emptyList())
-                       .edgesRemoved(Collections.emptyList())
-                       .edgesUnchanged(Collections.emptyList())
-                       .metrics(CallGraphDiff.GraphMetrics.builder()
-                                        .totalNodes(0).totalEdges(0).maxDepth(0)
-                                        .avgComplexity(0.0).hotspots(List.of())
-                                        .callDistribution(Map.of()).build())
-                       .languagesDetected(Collections.emptyList())
-                       .build();
-    }
 }

@@ -51,13 +51,14 @@ public class MethodComplexityAnalyzer {
             List<FileChangeSummary> fileChanges,
             String repoName,
             String baseSha,
-            String headSha) {
+            String headSha,
+            String token) {
 
         List<FileChangeSummary> enriched = new ArrayList<>();
 
         for (FileChangeSummary fileChange : fileChanges) {
             try {
-                FileChangeSummary enrichedFile = analyzeFile(fileChange, repoName, baseSha, headSha);
+                FileChangeSummary enrichedFile = analyzeFile(fileChange, repoName, baseSha, headSha, token);
                 enriched.add(enrichedFile);
             } catch (Exception e) {
                 // Fall back to heuristic values already set by DiffMetadataAnalyzer
@@ -77,13 +78,14 @@ public class MethodComplexityAnalyzer {
             FileChangeSummary fileChange,
             String repoName,
             String baseSha,
-            String headSha) {
+            String headSha,
+            String token) {
 
         String filename = fileChange.getFilename();
 
         // BUG-C5 FIX: Different SHAs for base vs head
-        Map<String, FlowNode> baseMethods = parseFileIfExists(repoName, filename, baseSha);
-        Map<String, FlowNode> headMethods = parseFileIfExists(repoName, filename, headSha);
+        Map<String, FlowNode> baseMethods = parseFileIfExists(repoName, filename, baseSha, token);
+        Map<String, FlowNode> headMethods = parseFileIfExists(repoName, filename, headSha, token);
 
         List<MethodChange> methodChanges = computeMethodChanges(baseMethods, headMethods);
 
@@ -114,10 +116,10 @@ public class MethodComplexityAnalyzer {
      *
      * Returns empty map on any failure so the caller falls back to heuristics.
      */
-    private Map<String, FlowNode> parseFileIfExists(String repoName, String filename, String ref) {
+    private Map<String, FlowNode> parseFileIfExists(String repoName, String filename, String ref, String token) {
         try {
             ASTParserService.ParsedCallGraph graph =
-                    astParser.parseDirectoryFromGithub(repoName, ref, List.of(filename));
+                    astParser.parseDirectoryFromGithub(repoName, ref, List.of(filename), token);
 
             return graph.nodes.entrySet().stream()
                            .filter(entry -> filename.equals(entry.getValue().getFilePath()))
