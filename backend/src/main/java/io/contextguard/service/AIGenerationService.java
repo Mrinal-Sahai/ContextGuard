@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.contextguard.analysis.flow.CallGraphDiff;
 import io.contextguard.analysis.flow.FlowEdge;
 import io.contextguard.analysis.flow.FlowNode;
+import io.contextguard.analysis.flow.NarrativeResult;
 import io.contextguard.client.AIClient;
 import io.contextguard.client.AIProvider;
 import io.contextguard.client.AIRouter;
@@ -99,7 +100,7 @@ public class AIGenerationService {
      * Generate AI narrative. Call this AFTER FlowExtractorService has fed back
      * AST metrics so that risk and difficulty reflect accurate complexity data.
      */
-    public AIGeneratedNarrative generateSummary(
+    public NarrativeResult generateSummary(
             List<GitHubFile> files,
             PRMetadata metadata,
             DiffMetrics metrics,
@@ -123,9 +124,10 @@ public class AIGenerationService {
             AIClient client   = aiRouter.getClient(provider);
             String aiResponse = client.generateSummary(prompt);
             String json       = extractJsonObject(cleanJson(aiResponse));
-            return parseJsonResponse(json);
+            AIGeneratedNarrative narrative=parseJsonResponse(json);
+            return new NarrativeResult(narrative, finalRisk, finalDifficulty);
         } catch (Exception e) {
-            return fallbackNarrative(metadata, metrics);
+            return fallbackNarrative(metadata, metrics,finalRisk, finalDifficulty);
         }
     }
 
@@ -920,8 +922,8 @@ STRICT RULES:
         return v.asText();
     }
 
-    private AIGeneratedNarrative fallbackNarrative(PRMetadata metadata, DiffMetrics metrics) {
-        return AIGeneratedNarrative.builder()
+    private NarrativeResult fallbackNarrative(PRMetadata metadata, DiffMetrics metrics,RiskAssessment risk, DifficultyAssessment difficulty) {
+        AIGeneratedNarrative narrative=AIGeneratedNarrative.builder()
                        .overview("Analysis summary temporarily unavailable.")
                        .structuralImpact("See file changes section.")
                        .behavioralChanges("See method-level changes.")
@@ -931,5 +933,6 @@ STRICT RULES:
                        .confidence("LOW — generated from fallback template")
                        .generatedAt(Instant.now())
                        .build();
+        return new NarrativeResult(narrative, risk, difficulty);
     }
 }

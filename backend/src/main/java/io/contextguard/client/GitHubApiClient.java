@@ -167,6 +167,10 @@ public class GitHubApiClient {
             if (token != null && !token.isBlank()) {
                 headers.setBearerAuth(token); // correct modern auth
             }
+            else
+            {
+                headers.setBearerAuth(this.token);
+            }
 
             // Request raw file content
             headers.set(HttpHeaders.ACCEPT, "application/vnd.github.v3.raw");
@@ -182,11 +186,11 @@ public class GitHubApiClient {
                 return resp.getBody();
             }
 
-            log.debug("Non-2xx response while fetching {}: {}", path, resp.getStatusCode());
+            log.warn("Non-2xx response while fetching {}: {}", path, resp.getStatusCode());
 
         } catch (HttpClientErrorException.NotFound e) {
             // File genuinely does not exist at this ref
-            log.debug("File not found at ref {}: {}", ref, path);
+            log.warn("File not found at ref {}: {}", ref, path);
 
         } catch (HttpClientErrorException e) {
             // Other GitHub errors (403, 422, etc.)

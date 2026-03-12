@@ -134,9 +134,9 @@ import java.util.*;
  *              × fatigue_multiplier
  *
  * FILE SCAN: 1.5 min/production file, 0.5 min/test file (pattern matching).
- * LOC READING: 1.2 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
+ * LOC READING: 1.5 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
  *   midpoint = 5 min/100 LOC. But only ~30% gets deep reading: 5 × 0.30 ≈ 1.5 min/100.
- *   Adjusted to 1.2 to account for skimming of boilerplate/getters.)
+ *   Adjusted to 1.5 to account for skimming of boilerplate/getters.)
  * COMPLEXITY THINK TIME: 0.5 min per cognitive complexity unit (above delta of 0).
  *   Rationale: each unit represents a mental path to trace. A trained reviewer
  *   handles ~2 units/min. (Campbell 2018; empirical calibration.)
@@ -231,7 +231,7 @@ public class DifficultyScoringEngine {
         // runaway time estimates. Research: a realistic 18-file Java PR has ~50-100
         // net decision points, not 1296. McCabe (1976): typical method CC = 3-7.
         int MAX_CREDIBLE_DELTA = 200;
-        int rawDelta = Math.abs(metrics.getComplexityDelta());
+        int rawDelta = metrics.getComplexityDelta();
         int totalCognitiveDelta;
         if (metrics.getAvgChangedMethodCC() > 0) {
             // AST-accurate: estimate total from per-method average × file count proxy
@@ -326,7 +326,7 @@ public class DifficultyScoringEngine {
                         .key("size")
                         .label("Code Size")
                         .rawValue(totalLOC)
-                        .unit("total lines changed  (added + deleted)  ·  pivot: 400 LOC")
+                        .unit("total lines added  ·  pivot: 400 LOC")
                         .signalVerdict(totalLOC < 100 ? "LOW"
                                                : totalLOC < 400 ? "MEDIUM"
                                                          : totalLOC < 800 ? "HIGH" : "CRITICAL")
@@ -446,8 +446,8 @@ public class DifficultyScoringEngine {
         // 2. LOC READING TIME
         //    SmartBear: 200–400 LOC/hr midpoint = 300 LOC/hr = 5 min/100 LOC
         //    BUT: ~30% of lines get deep attention (the rest is context/boilerplate)
-        //    Effective: 5 × 0.30 = 1.2 min/100 LOC.
-        double readTime = (totalLOC / 100.0) * 1.2;
+        //    Effective: 5 × 0.30 = 1.5 min/100 LOC.
+        double readTime = (totalLOC / 100.0) * 1.5;
 
         // 3. COMPLEXITY THINK TIME
         //    Each cognitive complexity unit = one branching path to mentally trace.

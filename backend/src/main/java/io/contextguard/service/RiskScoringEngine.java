@@ -201,9 +201,13 @@ public class RiskScoringEngine {
         double averageRisk = sumRisk / totalFiles;
 
         // ── Signal 3: Cognitive complexity (normalized) ───────────────────────
-        int rawComplexityDelta = Math.abs(metrics.getComplexityDelta());
-        double complexitySignal = saturate(rawComplexityDelta, COMPLEXITY_PIVOT);
-
+        int rawComplexityDelta = metrics.getComplexityDelta();
+        double complexitySignal ;
+        if (rawComplexityDelta > 0) {
+            complexitySignal = saturate(rawComplexityDelta, COMPLEXITY_PIVOT);
+        } else {
+            complexitySignal = -0.2 * saturate(Math.abs(rawComplexityDelta), COMPLEXITY_PIVOT);
+        }
         // ── Signal 4: Critical path density ──────────────────────────────────
         double criticalDensity = (double) criticalCount / totalFiles;
 

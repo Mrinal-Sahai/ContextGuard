@@ -72,14 +72,20 @@ public class DiagramService {
 
             // Step 3: AI narrative — receives the rendered diagram so the summary
             // can refer to specific sequence steps ("as shown in step 4 above...")
-            AIGeneratedNarrative narrative = aiService.generateSummary(
+            RiskAssessment finalRisk=intelligence.getRisk();
+            DifficultyAssessment finalDifficulty=intelligence.getDifficulty();
+
+            NarrativeResult result = aiService.generateSummary(
                     files, prMetadata,
                     intelligence.getMetrics(), intelligence.getRisk(),
                     intelligence.getDifficulty(), intelligence.getBlastRadius(),
                     diff, provider);
 
             // Step 4: Enrich and persist
-            intelligence.setNarrative(narrative);
+            intelligence.setNarrative(result.narrative());
+
+            intelligence.setRisk(result.risk());
+            intelligence.setDifficulty(result.difficulty());
             analysisResult.setMermaidDiagram(mermaidDiagram);
             analysisResult.setDiagramVerificationNotes(buildVerificationNote(diff));
             analysisResult.setIntelligence(intelligence);
@@ -125,3 +131,4 @@ public class DiagramService {
         return list != null ? list.size() : 0;
     }
 }
+

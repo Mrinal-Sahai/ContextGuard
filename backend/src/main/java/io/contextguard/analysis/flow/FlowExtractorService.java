@@ -402,7 +402,7 @@ public class FlowExtractorService {
         List<String> entryPoints = nodes.stream()
                                            .map(FlowNode::getId)
                                            .filter(id -> !hasIncoming.contains(id))
-                                           .collect(Collectors.toList());
+                                           .toList();
 
         // BFS from each entry point
         int maxDepth = 0;
