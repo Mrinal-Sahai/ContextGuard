@@ -3,7 +3,6 @@ package io.contextguard.analysis.flow;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -17,7 +16,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
@@ -135,8 +133,6 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
     // LSP reader thread
     private volatile Thread lspReaderThread;
 
-    private final Object startLock = new Object();
-
     // ─────────────────────────────────────────────────────────────────────────
     // Spring lifecycle
     // ─────────────────────────────────────────────────────────────────────────
@@ -155,8 +151,10 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
             performLspHandshake();
             logger.info("DartAnalysisBridge: Dart Analysis Server ready (sdk={})", flutterSdkPath);
         } catch (Exception e) {
+            // e.getMessage() is null for TimeoutException (no-arg constructor) — use toString()
+            // to always get the exception class name even when the message is absent.
             logger.warn("DartAnalysisBridge: could not start Analysis Server — " +
-                                "Dart parsing degrades to Tree-sitter. Reason: {}", e.getMessage());
+                                "Dart parsing degrades to Tree-sitter. Reason: {}", e.toString());
             permanentlyUnavailable = true;
         }
     }
@@ -281,10 +279,7 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
             // Method / function declarations
             java.util.regex.Matcher methodMatcher = METHOD_PATTERN.matcher(line);
             if (methodMatcher.find() && currentClass != null) {
-                String returnType  = methodMatcher.group(1) != null ? methodMatcher.group(1).trim() : "void";
                 String methodName  = methodMatcher.group(2);
-                boolean isAsync    = line.contains("async");
-                boolean isOverride = i > 0 && lines[i - 1].trim().equals("@override");
 
                 String nodeId = filePath + ":" + currentClass + "." + methodName;
                 symbolIndex.registerMethod(methodName, nodeId, currentClass, filePath, "dart");
@@ -336,7 +331,7 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
             String importPath  = m.group(1);    // the string inside quotes
             String asAlias     = m.group(2);    // alias after "as", may be null
             String showList    = m.group(3);    // show clause, may be null
-            String hideList    = m.group(4);    // hide clause, may be null
+            // hide clause (m.group(4)) intentionally not captured — not used for symbol resolution
 
             // Derive a canonical class name from the import path
             // "package:myapp/services/payment_service.dart" → "payment_service"
@@ -660,19 +655,32 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
         // dart language-server --protocol=lsp
         ProcessBuilder pb = new ProcessBuilder(dartBin, "language-server", "--protocol=lsp");
         pb.redirectErrorStream(false);
+
+        // Ensure the Dart process has the right env for pub cache and analytics suppression.
+        // Without PUB_CACHE pointing to a writable dir, dart may hang trying to write
+        // to the Flutter SDK cache on its first invocation as a non-root user.
+        Map<String, String> env = pb.environment();
+        String home = System.getProperty("user.home", "/home/contextguard");
+        env.put("PUB_CACHE",                   home + "/.pub-cache");
+        env.put("FLUTTER_ROOT",                flutterSdkPath);
+        env.put("FLUTTER_SUPPRESS_ANALYTICS",  "true");
+        env.put("DART_DISABLE_ANALYTICS",      "1");
+
         lspProcess = pb.start();
         lspStdin   = lspProcess.getOutputStream();
         lspStdout  = lspProcess.getInputStream();
 
-        // Drain stderr
+        // Drain stderr at DEBUG so server startup errors are visible in logs.
+        // Previously TRACE — completely invisible, masking all Analysis Server errors.
         Thread stderr = new Thread(() -> {
             try (BufferedReader r = new BufferedReader(
                     new InputStreamReader(lspProcess.getErrorStream(), StandardCharsets.UTF_8))) {
                 String l;
                 while ((l = r.readLine()) != null) {
-                    if (!l.isBlank()) logger.trace("[dart-lsp stderr] {}", l);
+                    if (!l.isBlank()) logger.debug("[dart-lsp stderr] {}", l);
                 }
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) { // stream closed on server exit — expected
+            }
         }, "dart-lsp-stderr");
         stderr.setDaemon(true);
         stderr.start();
@@ -696,7 +704,11 @@ public class DartAnalysisBridgeService implements InitializingBean, DisposableBe
         // 1. initialize
         ObjectNode initParams = objectMapper.createObjectNode();
         initParams.put("processId", ProcessHandle.current().pid());
-        initParams.put("rootUri", "file:///tmp");
+        // null rootUri: valid per LSP spec — tells the server there is no pre-loaded workspace.
+        // Previously "file:///tmp" caused the server to scan /tmp (thousands of non-Dart files)
+        // before responding to initialize, causing the 10-second handshake timeout.
+        initParams.putNull("rootUri");
+        initParams.set("workspaceFolders", objectMapper.createArrayNode());
 
         ObjectNode clientInfo = objectMapper.createObjectNode();
         clientInfo.put("name", "ContextGuard");

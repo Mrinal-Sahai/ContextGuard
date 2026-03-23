@@ -224,15 +224,22 @@ ENV FLUTTER_ROOT="/opt/flutter"
 # ── Post-copy setup ───────────────────────────────────────────────────────────
 # All RUN steps merged into one layer:
 #   1. Make go-types-bridge executable
-#   2. Verify dart binary works in the runtime image
+#   2. Verify dart binary works (runs as root — confirms binary is functional)
 #   3. Symlink pyright for convenient invocation (degrades gracefully if missing)
-#   4. Create non-root user; Flutter needs a writable home for pub cache
+#   4. Create non-root user + fix permissions
+#
+# FLUTTER CACHE PERMISSIONS (critical for Dart Analysis Server startup):
+#   The dart binary writes snapshot/stamp files to /opt/flutter/bin/cache/
+#   at runtime startup. If those files are root-owned and the app runs as
+#   contextguard, dart hangs silently and the LSP handshake times out.
+#   Fix: give contextguard ownership of just the cache dir (not all 1GB).
 RUN chmod +x /app/tree-sitter-bridge/go-types-bridge \
     && dart --version \
     && ln -sf /app/tree-sitter-bridge/node_modules/.bin/pyright /usr/local/bin/pyright \
     && (pyright --version || echo "Pyright not available — Python Tier 2 degrades gracefully") \
     && groupadd -r contextguard && useradd -r -g contextguard -m contextguard \
     && chown -R contextguard:contextguard /app \
+    && chown -R contextguard:contextguard /opt/flutter/bin/cache \
     && mkdir -p /home/contextguard/.pub-cache /home/contextguard/.flutter \
     && chown -R contextguard:contextguard /home/contextguard
 
@@ -248,11 +255,13 @@ ENV JAVA_OPTS="\
   -Djava.security.egd=file:/dev/./urandom"
 
 # ── Bridge configuration ──────────────────────────────────────────────────────
-ENV treesitter.bridge.script-path=/app/tree-sitter-bridge/tree-sitter-bridge.js
+# Using UPPER_SNAKE_CASE — Spring Boot relaxed binding maps these to the
+# lower.dot.case property keys used in application.yaml and @Value annotations.
+ENV TREESITTER_BRIDGE_SCRIPT_PATH=/app/tree-sitter-bridge/tree-sitter-bridge.js
 ENV GO_TYPES_BRIDGE_PATH=/app/tree-sitter-bridge/go-types-bridge
-ENV dart.analysis.flutter-sdk-path=/opt/flutter
-ENV dart.analysis.timeout-ms=15000
-ENV dart.analysis.batch-timeout-ms=120000
+ENV DART_ANALYSIS_FLUTTER_SDK_PATH=/opt/flutter
+ENV DART_ANALYSIS_TIMEOUT_MS=15000
+ENV DART_ANALYSIS_BATCH_TIMEOUT_MS=120000
 
 # ── Spring profile ────────────────────────────────────────────────────────────
 ENV SPRING_PROFILES_ACTIVE=prod

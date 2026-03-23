@@ -63,21 +63,27 @@ services:
       SPRING_PROFILES_ACTIVE: prod
 
       # ── Tree-sitter bridge ────────────────────────────────────────────────────
-      treesitter.bridge.script-path: /app/tree-sitter-bridge/tree-sitter-bridge.js
-      treesitter.bridge.node-command: node
-      treesitter.bridge.timeout-ms: 10000
-      treesitter.batch.timeout-ms: 60000
+      # Spring Boot relaxed binding: UPPER_SNAKE → lower.dot.case property keys
+      # TREESITTER_BRIDGE_SCRIPT_PATH  →  treesitter.bridge.script-path
+      TREESITTER_BRIDGE_SCRIPT_PATH: /app/tree-sitter-bridge/tree-sitter-bridge.js
+      TREESITTER_BRIDGE_NODE_COMMAND: node
+      TREESITTER_BRIDGE_TIMEOUT_MS: 10000
+      TREESITTER_BATCH_TIMEOUT_MS: 60000
       GO_TYPES_BRIDGE_PATH: /app/tree-sitter-bridge/go-types-bridge
 
       # ── Dart Analysis Server ──────────────────────────────────────────────────
-      dart.analysis.flutter-sdk-path: /opt/flutter
-      dart.analysis.timeout-ms: 15000
-      dart.analysis.batch-timeout-ms: 120000
-      dart.analysis.max-calls-per-file: 200
+      DART_ANALYSIS_FLUTTER_SDK_PATH: /opt/flutter
+      DART_ANALYSIS_TIMEOUT_MS: 15000
+      DART_ANALYSIS_BATCH_TIMEOUT_MS: 120000
+      DART_ANALYSIS_MAX_CALLS_PER_FILE: 200
+
+      # ── LLM provider (stub = no LLM calls, safe default) ─────────────────────
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
 
       # ── Secrets (from .env — never hardcode) ─────────────────────────────────
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
 
     depends_on:
