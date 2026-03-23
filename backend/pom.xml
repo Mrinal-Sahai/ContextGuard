@@ -78,6 +78,14 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webflux</artifactId>
 		</dependency>
+		<!-- Netty native macOS DNS resolver — suppresses warning on macOS when WebClient is used -->
+		<!-- Source: https://mvnrepository.com/artifact/io.netty/netty-resolver-dns-native-macos -->
+		<dependency>
+			<groupId>io.netty</groupId>
+			<artifactId>netty-resolver-dns-native-macos</artifactId>
+			<version>4.1.130.Final</version>
+			<scope>runtime</scope>
+		</dependency>
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>

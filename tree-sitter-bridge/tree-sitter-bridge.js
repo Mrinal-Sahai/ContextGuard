@@ -99,8 +99,18 @@ process.stderr.write(
 
 const parser = new Parser();
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
+// ─── Exported capabilities (for HTTP server) ──────────────────────────────────
 
+const TIER2_CAPABILITIES = {
+  tsc:      TS_API_AVAILABLE,
+  pyright:  PYRIGHT_AVAILABLE,
+  goTypes:  GO_BRIDGE_AVAILABLE,
+  dart:     DART_GRAMMAR_AVAILABLE,
+};
+
+// ─── Entry point (only when run directly as a script) ─────────────────────────
+
+if (require.main === module) {
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 rl.on('line', async (line) => {   // ← add 'async'
@@ -151,6 +161,7 @@ rl.on('line', async (line) => {   // ← add 'async'
 
 rl.on('close', () => process.exit(0));
 function writeResponse(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
+} // end: if (require.main === module)
 
 // ─── Dispatch ─────────────────────────────────────────────────────────────────
 
@@ -594,8 +605,10 @@ function parseJavaScript(filePath, content) {
 function parseWithTreeSitter(language, filePath, content) {
   const grammar = GRAMMARS[language];
   if (!grammar) throw new Error(`Grammar not available: ${language}`);
+  // tree-sitter parser.parse() requires a string — coerce buffers, null, undefined, etc.
+  const safeContent = (typeof content === 'string') ? content : String(content ?? '');
   parser.setLanguage(grammar);
-  const tree = parser.parse(content);
+  const tree = parser.parse(safeContent);
 
   switch (language) {
     case 'python':     return parsePythonTree(tree, filePath, content);
@@ -1030,3 +1043,6 @@ function findEnclosingNode(nodes, filePath, lineNo) {
   }
   return null;
 }
+
+// ─── Module exports (for HTTP server) ─────────────────────────────────────────
+module.exports = { parseFile, TIER2_CAPABILITIES };

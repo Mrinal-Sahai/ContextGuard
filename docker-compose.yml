@@ -29,21 +29,94 @@ services:
         max-file: "3"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # ContextGuard — Spring Boot Application
+  # Tree-sitter Bridge — Node.js HTTP server (port 3000)
   #
   # Contains:
-  #   - Spring Boot API (port 8080)
-  #   - Node.js tree-sitter bridge  (internal subprocess)
-  #   - Dart Analysis Server (LSP)  (internal subprocess, spawned by DartAnalysisBridgeService)
-  #   - go-types-bridge binary      (internal subprocess)
-  #   - Pyright                     (internal subprocess)
+  #   - Tree-sitter grammars (Python, Go, Ruby, JS, TS, Dart)
+  #   - TypeScript Compiler API (tsc) for type-resolved TS edges
+  #   - Pyright for Python type resolution
+  #   - go-types-bridge binary for Go call edges
   #
-  # Memory budget with Dart:
-  #   JVM heap (60% of 3GB):         ~1.8GB
-  #   Dart Analysis Server:          ~300-600MB (depends on project size)
-  #   Node.js bridge:                ~150MB
-  #   OS + overhead:                 ~300MB
-  #   Total:                         ~3GB — hence memory limit raised to 3.5g
+  # Image size: ~350MB  (down from 1.5GB when everything was in one image)
+  # ─────────────────────────────────────────────────────────────────────────────
+  tree-sitter-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.tree-sitter
+    container_name: contextguard-tree-sitter
+    networks:
+      - contextguard-net
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+        reservations:
+          memory: 256m
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Dart Bridge — Flutter + Node.js HTTP server (port 3001)
+  #
+  # Contains:
+  #   - Flutter SDK (includes Dart Analysis Server)   ~1GB
+  #   - Node.js (dart-bridge-server.js manages LSP subprocess)
+  #   - tree-sitter-dart grammar
+  #
+  # The start_period is 60s because the Dart Analysis Server takes ~15s to
+  # complete its LSP handshake on a cold start.
+  # ─────────────────────────────────────────────────────────────────────────────
+  dart-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.dart-bridge
+    container_name: contextguard-dart-bridge
+    networks:
+      - contextguard-net
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g    # Dart Analysis Server needs ~300-600MB
+          cpus: "1.0"
+        reservations:
+          memory: 512m
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ContextGuard — Spring Boot Application
+  #
+  # Contains ONLY the Spring Boot jar + JRE 17.
+  # All AST analysis is delegated to the bridge containers via HTTP.
+  #
+  # Memory budget:
+  #   JVM heap (75% of 1.5GB): ~1.1GB
+  #   OS + overhead:           ~300MB
+  #   Total:                   ~1.5GB
+  #   (Dart Analysis Server is now in its own container — no longer counted here)
   # ─────────────────────────────────────────────────────────────────────────────
   contextguard:
     build:
@@ -62,17 +135,13 @@ services:
       # ── Spring profile ────────────────────────────────────────────────────────
       SPRING_PROFILES_ACTIVE: prod
 
-      # ── Tree-sitter bridge ────────────────────────────────────────────────────
-      # Spring Boot relaxed binding: UPPER_SNAKE → lower.dot.case property keys
-      # TREESITTER_BRIDGE_SCRIPT_PATH  →  treesitter.bridge.script-path
-      TREESITTER_BRIDGE_SCRIPT_PATH: /app/tree-sitter-bridge/tree-sitter-bridge.js
-      TREESITTER_BRIDGE_NODE_COMMAND: node
+      # ── Bridge URLs (container-network names resolve automatically) ───────────
+      BRIDGE_TREE_SITTER_URL: http://tree-sitter-bridge:3000
+      BRIDGE_DART_URL: http://dart-bridge:3001
+
+      # ── Bridge timeouts ───────────────────────────────────────────────────────
       TREESITTER_BRIDGE_TIMEOUT_MS: 10000
       TREESITTER_BATCH_TIMEOUT_MS: 60000
-      GO_TYPES_BRIDGE_PATH: /app/tree-sitter-bridge/go-types-bridge
-
-      # ── Dart Analysis Server ──────────────────────────────────────────────────
-      DART_ANALYSIS_FLUTTER_SDK_PATH: /opt/flutter
       DART_ANALYSIS_TIMEOUT_MS: 15000
       DART_ANALYSIS_BATCH_TIMEOUT_MS: 120000
       DART_ANALYSIS_MAX_CALLS_PER_FILE: 200
@@ -85,9 +154,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
-
     depends_on:
       postgres:
+        condition: service_healthy
+      tree-sitter-bridge:
+        condition: service_healthy
+      dart-bridge:
         condition: service_healthy
 
     networks:
@@ -97,7 +169,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
-      start_period: 90s    # raised from 60s — Dart Analysis Server adds ~15s startup
+      start_period: 60s
       retries: 3
 
     restart: unless-stopped
@@ -105,16 +177,16 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "50m"    # Spring Boot + bridge logs are verbose; cap per-file
-        max-file: "5"      # keep 250MB total (5 × 50MB)
+        max-size: "50m"
+        max-file: "5"
 
     deploy:
       resources:
         limits:
-          memory: 3.5g    # raised from 2g — Dart Analysis Server needs ~300-600MB extra
+          memory: 1.5g    # JRE only — bridges are in separate containers
           cpus: "2.0"
         reservations:
-          memory: 2g      # raised from 1g
+          memory: 512m
           cpus: "0.5"
 
 
