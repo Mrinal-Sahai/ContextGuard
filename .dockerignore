@@ -1,0 +1,32 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ── Build outputs (rebuilt inside Docker) ─────────────────────────────────────
+backend/target/
+frontend/dist/
+frontend/node_modules/
+
+# ── Node.js (rebuilt inside Docker from package-lock.json) ───────────────────
+tree-sitter-bridge/node_modules/
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── OS noise ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Claude / memory ───────────────────────────────────────────────────────────
+.claude/
+
+# ── Docs (not needed in image) ────────────────────────────────────────────────
+*.md
+!backend/src/**/*.md

@@ -1,2 +1,3 @@
 .idea/
 tree-sitter-bridge/node_modules
+.env

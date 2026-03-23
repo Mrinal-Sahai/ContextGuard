@@ -6,6 +6,7 @@ import '../styles.css'
 import ErrorBoundary from './components/ErrorBoundary';
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ReviewPage from './components/ReviewPage';
+import ContextGuardPresentation from './components/ContextGuardPresentation';
 
 /**
  * Main app with simple routing.
@@ -23,6 +24,8 @@ const App: React.FC = () => {
       <Routes>
         <Route path="/" element={<ContextGuardDashboard />} />
         <Route path="/review/:analysisId" element={<ReviewPage />} />
+        <Route path="/presentation" element={<ContextGuardPresentation/>} />
+
       </Routes>
     </BrowserRouter>
   );
