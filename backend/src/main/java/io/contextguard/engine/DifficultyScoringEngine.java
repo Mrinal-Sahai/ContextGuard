@@ -219,28 +219,29 @@ public class DifficultyScoringEngine {
         long prodFileCount = files.stream().filter(f -> !isTestFile(f.getFilename())).count();
         long testFileCount = totalFiles - prodFileCount;
 
-        // FIX: cognitive delta from heuristic diff-line counting is noise-inflated
-        // for large PRs. A 18-file PR with keyword patterns produces delta=1296
-        // which is not 1296 real decision points — it's regex matches across
-        // boilerplate, comments, and string literals.
+        // complexityDelta source selection:
         //
-        // Correction: cap cognitive contribution using avgChangedMethodCC from AST
-        // when available. If AST data present (avgChangedMethodCC > 0), use it:
-        //   effectiveCognitiveDelta = avgChangedMethodCC × changedMethodCount (estimated)
-        // If not available, cap raw delta at MAX_CREDIBLE_DELTA = 200 to prevent
-        // runaway time estimates. Research: a realistic 18-file Java PR has ~50-100
-        // net decision points, not 1296. McCabe (1976): typical method CC = 3-7.
+        // After AST runs (avgChangedMethodCC > 0), FlowExtractorService has already
+        // written the accurate AST-computed delta into metrics.getComplexityDelta().
+        // Use it directly — do NOT re-estimate from avgCC × estimatedMethods, because
+        // that re-estimation (avgCC × prodFiles×3) produces a less accurate result
+        // than the direct sum the AST computed (e.g. re-estimate=18 vs AST delta=35).
+        //
+        // The re-estimation was originally intended for the heuristic (pre-AST) case
+        // where diff-line keyword counting can inflate delta to absurd values (e.g. 1296
+        // for a large PR — regex hits on comments, strings, boilerplate). In that case
+        // we cap at MAX_CREDIBLE_DELTA=200 as a sanity check.
+        //
+        // McCabe (1976): typical method CC = 3–7. A realistic 18-file PR has ~50–100
+        // net decision points. Anything >>200 from heuristic counting is noise.
         int MAX_CREDIBLE_DELTA = 200;
         int rawDelta = metrics.getComplexityDelta();
         int totalCognitiveDelta;
         if (metrics.getAvgChangedMethodCC() > 0) {
-            // AST-accurate: estimate total from per-method average × file count proxy
-            // File count × avg methods per file (≈3) × avg CC per method
-            int estimatedMethods = (int)(prodFileCount * 3);
-            totalCognitiveDelta = (int)(metrics.getAvgChangedMethodCC() * estimatedMethods);
-            totalCognitiveDelta = Math.min(totalCognitiveDelta, MAX_CREDIBLE_DELTA);
+            // AST ran — complexityDelta is the accurate direct AST measurement; use it.
+            totalCognitiveDelta = rawDelta;
         } else {
-            // Heuristic: cap to prevent inflation from diff-line keyword counting
+            // Heuristic only — cap to prevent inflation from diff-line keyword counting.
             totalCognitiveDelta = Math.min(rawDelta, MAX_CREDIBLE_DELTA);
         }
         int    criticalCount       = 0;
@@ -309,14 +310,18 @@ public class DifficultyScoringEngine {
                         .key("cognitive")
                         .label("Cognitive Complexity")
                         .rawValue(totalCognitiveDelta)
-                        .unit("new decision branches the reviewer must mentally trace")
+                        .unit("new decision branches added  (AST-measured · pivot: 15 units = 0.50 signal)")
                         .signalVerdict(totalCognitiveDelta < 8 ? "LOW"
                                                : totalCognitiveDelta < 20 ? "MEDIUM"
                                                          : totalCognitiveDelta < 50 ? "HIGH" : "CRITICAL")
                         .whatItMeans(interpretCognitiveDelta(totalCognitiveDelta))
-                        .evidence("Campbell (2018), SonarSource — cognitive complexity is the #1 predictor " +
-                                          "of reviewer comprehension time, outperforming flat McCabe CC. " +
-                                          "Bacchelli & Bird (2013), ICSE — comprehension time dominates review cost.")
+                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 CC unit ≈ +0.15 defects/KLOC. " +
+                                          "Bacchelli & Bird (2013), ICSE — comprehension time is the dominant cost " +
+                                          "in code review. Weight 0.35 (highest signal) because branch complexity " +
+                                          "drives how long a reviewer must mentally trace logic paths — more than " +
+                                          "file count or LOC alone. Same AST-measured value as Cyclomatic Complexity Δ " +
+                                          "in risk scoring, applied here with a tighter pivot (15 vs 20) because " +
+                                          "comprehension effort saturates sooner than defect probability.")
                         .weight(W_COGNITIVE)
                         .normalizedSignal(round3(cognitiveSignal))
                         .weightedContribution(round3(W_COGNITIVE * cognitiveSignal))

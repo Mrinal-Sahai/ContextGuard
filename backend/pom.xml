@@ -149,13 +149,6 @@
 			<version>23.0.1</version>
 		</dependency>
 
-		<!-- JavaParser for Java (kept for comparison/validation) -->
-		<dependency>
-			<groupId>com.github.javaparser</groupId>
-			<artifactId>javaparser-symbol-solver-core</artifactId>
-			<version>3.25.5</version>
-		</dependency>
-
 		<!-- ANTLR for additional language support -->
 		<dependency>
 			<groupId>org.antlr</groupId>

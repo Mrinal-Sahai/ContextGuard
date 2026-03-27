@@ -2,6 +2,7 @@ package io.contextguard.analysis.flow;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
+import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -88,7 +89,9 @@ public class ASTParserService {
 
     public ASTParserService(GitHubApiClient githubService) {
         this.githubService = githubService;
-        this.javaParser = new JavaParser();
+        ParserConfiguration defaultConfig = new ParserConfiguration()
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
+        this.javaParser = new JavaParser(defaultConfig);
         this.objectMapper = new ObjectMapper();
         this.executorService = Executors.newFixedThreadPool(
                 Math.max(4, Runtime.getRuntime().availableProcessors())
@@ -129,12 +132,9 @@ public class ASTParserService {
                                                         .filter(this::isSourceFile)
                                                         .map(path -> CompletableFuture.runAsync(() -> {
                                                             try {
-                                                                // FIX BUG-NONDET-1: pass the token so fetches are authenticated.
                                                                 // Without this, all calls were unauthenticated (60 req/hr limit).
                                                                 String content = githubService.getFileContent(fullRepoName, path, ref, githubToken);
 
-                                                                // FIX BUG-NONDET-2: GitHub error responses are non-blank JSON strings.
-                                                                // e.g. {"message":"API rate limit exceeded...","documentation_url":"..."}
                                                                 // The old isBlank() guard let these through → JavaParser failed silently
                                                                 // → 0 nodes for that file → all methods appeared as "added" in the diff.
                                                                 if (content == null || content.isBlank()) return;
@@ -204,7 +204,9 @@ public class ASTParserService {
                                           Map<String, FlowNode> nodes, List<FlowEdge> edges) {
         ParseResult<CompilationUnit> result;
         try {
-            final JavaParser parser = new JavaParser();
+            ParserConfiguration config = new ParserConfiguration()
+                    .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
+            final JavaParser parser = new JavaParser(config);
             result = parser.parse(content);
         } catch (Throwable t) {
             // Was logger.debug → completely invisible in production logs.
