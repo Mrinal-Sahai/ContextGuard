@@ -44,7 +44,6 @@ const path     = require('path');
 const fs       = require('fs');
 const { execSync, spawnSync } = require('child_process');
 const { handleIndexBatch } = require('./index-batch-handler');
-const { parseDart, DART_GRAMMAR_AVAILABLE } = require('./dart-parser');
 
 // ─── Grammar loading ──────────────────────────────────────────────────────────
 
@@ -62,7 +61,6 @@ const GRAMMARS = {
   ruby:       loadGrammar('tree-sitter-ruby'),
   javascript: loadGrammar('tree-sitter-javascript'),
   typescript: null,
-  dart:       DART_GRAMMAR_AVAILABLE ? loadGrammar('tree-sitter-dart') : null,
 };
 try {
   const tsLang = require('tree-sitter-typescript');
@@ -94,10 +92,10 @@ const GO_BRIDGE_AVAILABLE = (() => {
 })();
 
 process.stderr.write(
-  `[bridge] Tier 2 capabilities: tsc=${TS_API_AVAILABLE}, pyright=${PYRIGHT_AVAILABLE}, go-types=${GO_BRIDGE_AVAILABLE}\n`
+  `[bridge] Tier 2 capabilities: tsc=${TS_API_AVAILABLE}, pyright=${PYRIGHT_AVAILABLE}, goTypes=${GO_BRIDGE_AVAILABLE}\n`
 );
 
-const parser = new Parser();
+let parser = new Parser();
 
 // ─── Exported capabilities (for HTTP server) ──────────────────────────────────
 
@@ -105,7 +103,6 @@ const TIER2_CAPABILITIES = {
   tsc:      TS_API_AVAILABLE,
   pyright:  PYRIGHT_AVAILABLE,
   goTypes:  GO_BRIDGE_AVAILABLE,
-  dart:     DART_GRAMMAR_AVAILABLE,
 };
 
 // ─── Entry point (only when run directly as a script) ─────────────────────────
@@ -172,14 +169,6 @@ function parseFile(language, filePath, content) {
     case 'go':         return parseGo(filePath, content);
     case 'ruby':       return parseRuby(filePath, content);
     case 'javascript': return parseJavaScript(filePath, content);
-    case 'dart': {
-      if (!DART_GRAMMAR_AVAILABLE || !GRAMMARS.dart) {
-        throw new Error('tree-sitter-dart grammar not available — install tree-sitter-dart');
-      }
-      parser.setLanguage(GRAMMARS.dart);
-      const tree = parser.parse(content);
-      return parseDart(tree, filePath, content);
-    }
     default:           throw new Error(`Unsupported language: ${language}`);
   }
 }
@@ -605,17 +594,46 @@ function parseJavaScript(filePath, content) {
 function parseWithTreeSitter(language, filePath, content) {
   const grammar = GRAMMARS[language];
   if (!grammar) throw new Error(`Grammar not available: ${language}`);
-  // tree-sitter parser.parse() requires a string — coerce buffers, null, undefined, etc.
-  const safeContent = (typeof content === 'string') ? content : String(content ?? '');
+
+  // Normalise to a UTF-8 string. Buffer.toString('utf8') is correct;
+  // String(buffer) would produce "[object Object]" for Node.js Buffers.
+  let safeContent = typeof content === 'string'
+    ? content
+    : (Buffer.isBuffer(content) ? content.toString('utf8') : String(content ?? ''));
+
+  // Root cause of "Invalid argument" errors on Alembic migrations and pipeline files:
+  // tree-sitter native binding rejects strings that contain NUL bytes (\x00).
+  safeContent = safeContent.replace(/\0/g, '');
+
+  // Guard against minified/generated files that can OOM the native parser.
+  if (safeContent.length > 500_000) {
+    process.stderr.write(`[bridge] WARN: ${filePath} truncated to 500KB (was ${safeContent.length} chars)\n`);
+    safeContent = safeContent.substring(0, 500_000);
+  }
+
   parser.setLanguage(grammar);
-  const tree = parser.parse(safeContent);
+  let tree;
+  try {
+    tree = parser.parse(safeContent);
+  } catch (e) {
+    // Re-initialise so the next file is not poisoned by corrupted parser state.
+    // NOTE: parser must be `let` (not `const`) for this assignment to work.
+    try {
+      parser = new Parser();
+      parser.setLanguage(grammar);
+      // Retry once with the fresh parser — recovers the triggering file too.
+      tree = parser.parse(safeContent);
+    } catch (e2) {
+      throw new Error(`Tree-sitter error for ${filePath}: ${e2.message}`);
+    }
+  }
 
   switch (language) {
-    case 'python':     return parsePythonTree(tree, filePath, content);
-    case 'go':         return parseGoTree(tree, filePath, content);
-    case 'ruby':       return parseRubyTree(tree, filePath, content);
+    case 'python':     return parsePythonTree(tree, filePath, safeContent);
+    case 'go':         return parseGoTree(tree, filePath, safeContent);
+    case 'ruby':       return parseRubyTree(tree, filePath, safeContent);
     case 'javascript':
-    case 'typescript': return parseJSTree(tree, filePath, content);
+    case 'typescript': return parseJSTree(tree, filePath, safeContent);
     default:           throw new Error(`No tree-sitter parser for: ${language}`);
   }
 }

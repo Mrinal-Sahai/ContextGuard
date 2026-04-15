@@ -18,7 +18,11 @@ import {
   ExternalLink,
   Network,
   Sun,
-  Moon
+  Moon,
+  Layers,
+  Globe2,
+  Boxes,
+  Radio,
 } from "lucide-react";
 
 import MermaidDiagram from "./MermaidDiagram";
@@ -26,6 +30,7 @@ import { PRIntelligenceResponse } from "../types/index";
 import { formatDate } from "../services/utility";
 import { NarrativeSection } from "./NarrativeSection";
 import { FileChangeItem } from "./FileChangeItem";
+import MergeReadinessBanner from "./MergeReadinessBanner";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
@@ -269,6 +274,15 @@ const generatePDF = async () => {
         </div>
         </div>
 
+        {/* Merge Readiness Verdict */}
+        <MergeReadinessBanner
+          risk={analysisData.risk}
+          difficulty={analysisData.difficulty}
+          semgrepFindingCount={analysisData.metrics?.semgrepFindingCount}
+          astAccurate={analysisData.metrics?.astAccurate}
+          isDarkMode={isDarkMode}
+        />
+
         {/* Key Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <MetricCard
@@ -315,34 +329,7 @@ const generatePDF = async () => {
 
 
         {/* Blast Radius */}
-        <div className={`border rounded-xl p-6 ${cardBg}`}>
-          <h3 className={`text-lg font-bold ${textPrimary} mb-4`}>
-            Blast Radius Assessment
-          </h3>
-
-          <div className="grid md:grid-cols-3 gap-6">
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Impact Scope</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.scope}
-              </div>
-            </div>
-
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Directories</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.affectedDirectories}
-              </div>
-            </div>
-
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Modules</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.affectedModules}
-              </div>
-            </div>
-          </div>
-        </div>
+        {analysisData.blastRadius && <BlastRadiusCard blastRadius={analysisData.blastRadius} isDarkMode={isDarkMode} cardBg={cardBg} textPrimary={textPrimary} textSecondary={textSecondary} />}
 
         {<ASTMetricsPanel metrics={analysisData.metrics} isDarkMode={isDarkMode}/>}
 
@@ -457,6 +444,92 @@ const generatePDF = async () => {
         </footer>
       </div>
     </div>
+    </div>
+  );
+}
+
+// ─── Blast Radius Card ─────────────────────────────────────────────────────────
+
+const SCOPE_META: Record<string, { color: string; bg: string; border: string; label: string; description: string }> = {
+  LOCALIZED:    { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30", label: "Localized",    description: "Change is contained to a single module and layer. Minimal cross-component risk." },
+  COMPONENT:    { color: "text-cyan-400",    bg: "bg-cyan-500/10",    border: "border-cyan-500/30",    label: "Component",    description: "Multiple layers within one module affected. Review for layer contract changes." },
+  MODULE:       { color: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/30",   label: "Module",       description: "Crosses module boundaries. Downstream consumers of the changed module may be affected." },
+  CROSS_MODULE: { color: "text-orange-400",  bg: "bg-orange-500/10",  border: "border-orange-500/30",  label: "Cross-Module", description: "Multiple modules affected. Integration test coverage across module boundaries is essential." },
+  SYSTEM_WIDE:  { color: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/30",    label: "System-Wide",  description: "4+ modules or 3+ architectural layers touched. Full regression test suite required before merge." },
+};
+
+function BlastRadiusCard({ blastRadius, isDarkMode, cardBg, textPrimary, textSecondary }: {
+  blastRadius: NonNullable<import('../types/index').PRIntelligenceResponse['blastRadius']>;
+  isDarkMode: boolean; cardBg: string; textPrimary: string; textSecondary: string;
+}) {
+  const scopeKey = blastRadius.scope?.replace(/-/g, "_") ?? "LOCALIZED";
+  const meta = SCOPE_META[scopeKey] ?? SCOPE_META["LOCALIZED"];
+  const cellBg = isDarkMode ? "bg-slate-900/50 border-slate-700/50" : "bg-slate-50 border-slate-200";
+
+  return (
+    <div className={`border rounded-xl p-6 ${cardBg}`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-5">
+        <Radio className={`w-5 h-5 ${meta.color}`} />
+        <h3 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+          Blast Radius Assessment
+        </h3>
+        <span className={`ml-auto px-2.5 py-0.5 rounded-full text-xs font-bold border ${meta.bg} ${meta.color} ${meta.border}`}>
+          {meta.label}
+        </span>
+      </div>
+
+      {/* Scope description */}
+      <p className={`text-sm mb-5 ${textSecondary}`}>{meta.description}</p>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Boxes className="w-3.5 h-3.5" /> Modules
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedModules ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedModuleNames?.slice(0, 2).join(", ") || "—"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Layers className="w-3.5 h-3.5" /> Arch. Layers
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedLayerCount ?? blastRadius.affectedLayers?.length ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedLayers?.join(" → ") || "none"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Globe2 className="w-3.5 h-3.5" /> Domains
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedDomains?.length ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedDomains?.join(", ") || "—"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Network className="w-3.5 h-3.5" /> Directories
+          </div>
+          <div className={`text-2xl font-black ${textPrimary}`}>{blastRadius.affectedDirectories ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>changed paths</div>
+        </div>
+      </div>
+
+      {/* Reviewer guidance */}
+      {blastRadius.reviewerGuidance && (
+        <div className={`flex items-start gap-2 text-sm p-3 rounded-lg border ${meta.bg} ${meta.border}`}>
+          <Radio className={`w-4 h-4 shrink-0 mt-0.5 ${meta.color}`} />
+          <span className={meta.color}>{blastRadius.reviewerGuidance}</span>
+        </div>
+      )}
     </div>
   );
 }

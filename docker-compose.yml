@@ -32,12 +32,12 @@ services:
   # Tree-sitter Bridge — Node.js HTTP server (port 3000)
   #
   # Contains:
-  #   - Tree-sitter grammars (Python, Go, Ruby, JS, TS, Dart)
+  #   - Tree-sitter grammars (Python, Go, Ruby, JS, TS)
   #   - TypeScript Compiler API (tsc) for type-resolved TS edges
   #   - Pyright for Python type resolution
   #   - go-types-bridge binary for Go call edges
   #
-  # Image size: ~350MB  (down from 1.5GB when everything was in one image)
+  # Image size: ~350MB
   # ─────────────────────────────────────────────────────────────────────────────
   tree-sitter-bridge:
     build:
@@ -68,45 +68,6 @@ services:
           memory: 256m
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Dart Bridge — Flutter + Node.js HTTP server (port 3001)
-  #
-  # Contains:
-  #   - Flutter SDK (includes Dart Analysis Server)   ~1GB
-  #   - Node.js (dart-bridge-server.js manages LSP subprocess)
-  #   - tree-sitter-dart grammar
-  #
-  # The start_period is 60s because the Dart Analysis Server takes ~15s to
-  # complete its LSP handshake on a cold start.
-  # ─────────────────────────────────────────────────────────────────────────────
-  dart-bridge:
-    build:
-      context: .
-      dockerfile: Dockerfile.dart-bridge
-    container_name: contextguard-dart-bridge
-    networks:
-      - contextguard-net
-    healthcheck:
-      test: ["CMD", "node", "-e",
-             "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
-      interval: 20s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "30m"
-        max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 1.5g    # Dart Analysis Server needs ~300-600MB
-          cpus: "1.0"
-        reservations:
-          memory: 512m
-
-  # ─────────────────────────────────────────────────────────────────────────────
   # ContextGuard — Spring Boot Application
   #
   # Contains ONLY the Spring Boot jar + JRE 17.
@@ -116,7 +77,6 @@ services:
   #   JVM heap (75% of 1.5GB): ~1.1GB
   #   OS + overhead:           ~300MB
   #   Total:                   ~1.5GB
-  #   (Dart Analysis Server is now in its own container — no longer counted here)
   # ─────────────────────────────────────────────────────────────────────────────
   contextguard:
     build:
@@ -137,14 +97,10 @@ services:
 
       # ── Bridge URLs (container-network names resolve automatically) ───────────
       BRIDGE_TREE_SITTER_URL: http://tree-sitter-bridge:3000
-      BRIDGE_DART_URL: http://dart-bridge:3001
 
       # ── Bridge timeouts ───────────────────────────────────────────────────────
       TREESITTER_BRIDGE_TIMEOUT_MS: 10000
       TREESITTER_BATCH_TIMEOUT_MS: 60000
-      DART_ANALYSIS_TIMEOUT_MS: 15000
-      DART_ANALYSIS_BATCH_TIMEOUT_MS: 120000
-      DART_ANALYSIS_MAX_CALLS_PER_FILE: 200
 
       # ── LLM provider (stub = no LLM calls, safe default) ─────────────────────
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
@@ -158,8 +114,6 @@ services:
       postgres:
         condition: service_healthy
       tree-sitter-bridge:
-        condition: service_healthy
-      dart-bridge:
         condition: service_healthy
 
     networks:

@@ -71,6 +71,8 @@ export interface DiffMetrics {
   hotspotMethodIds?: string[];
   removedPublicMethods?: number;
   addedPublicMethods?: number;
+  astAccurate?: boolean;
+  semgrepFindingCount?: number;
 }
 
 export interface FileChangeSummary {
@@ -116,12 +118,28 @@ export interface RiskBreakdown {
   highRiskDensityContribution: number;
   complexityContribution?: number;
   testCoverageGapContribution?: number;
+  sastFindingsContribution?: number;
   // raw values for tooltip display only — excluded from chart bars
   rawAverageRisk?: number;
   rawPeakRisk?: number;
   rawComplexityDelta?: number;
   rawCriticalDensity?: number;
   rawTestCoverageGap?: number;
+  rawSastFindings?: number;
+  signals?: SignalInterpretation[];
+}
+
+export interface SignalInterpretation {
+  key: string;
+  label: string;
+  rawValue: number;
+  unit: string;
+  signalVerdict: string;
+  whatItMeans: string;
+  evidence: string;
+  weight: number;
+  normalizedSignal: number;
+  weightedContribution: number;
 }
 
 export interface DifficultyAssessment {

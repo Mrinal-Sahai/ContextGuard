@@ -6,7 +6,7 @@
 # Runs tree-sitter-http-server.js on port 3000.
 #
 # Tier 2 capabilities bundled in this image:
-#   - Tree-sitter grammars: Python, Go, Ruby, JS, TS, Dart
+#   - Tree-sitter grammars: Python, Go, Ruby, JS, TS
 #   - TypeScript Compiler API (tsc) for type-resolved TS edges
 #   - Pyright for Python type resolution
 #   - go-types-bridge binary (go/types + go/ssa) for Go call edges
@@ -61,8 +61,6 @@ RUN --mount=type=cache,target=/root/.npm \
         require('tree-sitter-javascript'); \
         require('tree-sitter-typescript'); \
         require('tree-sitter-ruby'); \
-        try { require('tree-sitter-dart'); console.log('tree-sitter-dart OK'); } \
-        catch(e) { console.warn('tree-sitter-dart not available:', e.message); } \
         console.log('All grammars verified'); \
     "
 
@@ -80,7 +78,6 @@ WORKDIR /app/tree-sitter-bridge
 COPY tree-sitter-bridge/tree-sitter-bridge.js     ./tree-sitter-bridge.js
 COPY tree-sitter-bridge/tree-sitter-http-server.js ./tree-sitter-http-server.js
 COPY tree-sitter-bridge/index-batch-handler.js     ./index-batch-handler.js
-COPY tree-sitter-bridge/dart-parser.js             ./dart-parser.js
 
 # Pre-compiled node_modules (native .node files match this Node ABI)
 COPY --from=node-builder /bridge/node_modules ./node_modules

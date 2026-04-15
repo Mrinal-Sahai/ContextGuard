@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * with plain HTTP calls to the same tree-sitter-bridge container.
  *
  * Bridge endpoints used:
- *   GET  /health       → { tsc, pyright, goTypes, dart }
+ *   GET  /health       → { tsc, pyright, goTypes }
  *   POST /index-batch  → { language, files } → { symbols, importAliases, variableTypes }
  *   POST /parse        → { language, filePath, content } → { nodes, edges }
  *

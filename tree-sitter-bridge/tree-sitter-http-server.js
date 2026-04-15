@@ -57,10 +57,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/parse') {
       const body = await readBody(req);
       const { language, filePath, content } = JSON.parse(body);
+      const t0 = Date.now();
       try {
         const result = parseFile(language, filePath, content);
+        const ms = Date.now() - t0;
+        process.stderr.write(`[ts] OK  ${(language||'?').padEnd(10)} ${result.nodes.length}n ${result.edges.length}e  ${ms}ms  ${filePath}\n`);
         json(res, 200, { nodes: result.nodes, edges: result.edges, error: null });
       } catch (e) {
+        const ms = Date.now() - t0;
+        process.stderr.write(`[ts] ERR ${(language||'?').padEnd(10)} ${ms}ms  ${filePath} — ${e.message}\n`);
         json(res, 200, { nodes: [], edges: [], error: e.message });
       }
       return;
@@ -99,9 +104,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   process.stderr.write(
-    `[tree-sitter-bridge] HTTP server listening on port ${PORT} ` +
-    `(tsc=${TIER2_CAPABILITIES.tsc}, pyright=${TIER2_CAPABILITIES.pyright}, ` +
-    `go-types=${TIER2_CAPABILITIES.goTypes}, dart=${TIER2_CAPABILITIES.dart})\n`
+    `[ts-bridge] Listening on :${PORT} — tsc=${TIER2_CAPABILITIES.tsc} pyright=${TIER2_CAPABILITIES.pyright} go-types=${TIER2_CAPABILITIES.goTypes}\n`
   );
 });
 

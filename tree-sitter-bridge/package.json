@@ -1,7 +1,7 @@
 {
   "name": "tree-sitter-bridge",
   "version": "2.1.0",
-  "description": "Tier 2 multi-language AST parser — Tree-sitter + tsc + Pyright + go/types + Dart LSP",
+  "description": "Tier 2 multi-language AST parser — Tree-sitter + tsc + Pyright + go/types",
   "main": "tree-sitter-bridge.js",
   "scripts": {
     "start": "node tree-sitter-bridge.js",
@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "tree-sitter": "^0.21.1",
-    "tree-sitter-dart": "^1.0.0",
     "tree-sitter-go": "^0.21.0",
     "tree-sitter-javascript": "^0.21.4",
     "tree-sitter-python": "^0.21.0",

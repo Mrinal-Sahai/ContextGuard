@@ -5,6 +5,7 @@ import io.contextguard.dto.*;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
 import io.contextguard.service.AIGenerationService;
+import io.contextguard.service.SemgrepAnalyzerService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -28,19 +29,23 @@ public class DiagramService {
     private final MermaidRendererService mermaidRenderer;
     private final PRAnalysisRepository repository;
     private final AIGenerationService aiService;
-    private final LLMSequenceDiagramService llmSequenceDiagramService ;
+    private final LLMSequenceDiagramService llmSequenceDiagramService;
+    private final SemgrepAnalyzerService semgrepAnalyzer;
 
     public DiagramService(
             FlowExtractorService flowExtractor,
             MermaidRendererService mermaidRenderer,
             PRAnalysisRepository repository,
-            AIGenerationService aiService, LLMSequenceDiagramService llmSequenceDiagramService) {
+            AIGenerationService aiService,
+            LLMSequenceDiagramService llmSequenceDiagramService,
+            SemgrepAnalyzerService semgrepAnalyzer) {
 
-        this.flowExtractor = flowExtractor;
-        this.mermaidRenderer = mermaidRenderer;
-        this.repository = repository;
-        this.aiService = aiService;
+        this.flowExtractor           = flowExtractor;
+        this.mermaidRenderer         = mermaidRenderer;
+        this.repository              = repository;
+        this.aiService               = aiService;
         this.llmSequenceDiagramService = llmSequenceDiagramService;
+        this.semgrepAnalyzer         = semgrepAnalyzer;
     }
 
     /**
@@ -70,16 +75,26 @@ public class DiagramService {
             String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, provider);
             log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
 
-            // Step 3: AI narrative — receives the rendered diagram so the summary
-            // can refer to specific sequence steps ("as shown in step 4 above...")
-            RiskAssessment finalRisk=intelligence.getRisk();
-            DifficultyAssessment finalDifficulty=intelligence.getDifficulty();
+            // Step 3: Run Semgrep BEFORE the LLM — findings are injected as ground-truth
+            // facts into the prompt so the AI explains real issues, not invented ones.
+            // Degrades gracefully: returns empty list if Semgrep is not installed.
+            log.info("[semgrep] Running SAST on {} files (available={})",
+                    files.size(), semgrepAnalyzer.isSemgrepAvailable());
+            List<io.contextguard.dto.SemgrepFinding> semgrepFindings = semgrepAnalyzer.analyze(files);
+            if (semgrepFindings.isEmpty()) {
+                log.info("[semgrep] 0 findings");
+            } else {
+                intelligence.getMetrics().setSemgrepFindingCount(semgrepFindings.size());
+                semgrepFindings.forEach(f ->
+                    log.info("[semgrep] {} {} {}:{} — {}", f.severity(), f.ruleId(), f.filePath(), f.line(), f.message()));
+            }
 
+            // Step 4: AI narrative — receives call graph + Semgrep findings
             NarrativeResult result = aiService.generateSummary(
                     files, prMetadata,
                     intelligence.getMetrics(), intelligence.getRisk(),
                     intelligence.getDifficulty(), intelligence.getBlastRadius(),
-                    diff, provider);
+                    diff, provider, semgrepFindings);
 
             // Step 4: Enrich and persist
             intelligence.setNarrative(result.narrative());

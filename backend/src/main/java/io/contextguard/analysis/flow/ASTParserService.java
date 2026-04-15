@@ -36,7 +36,6 @@ import java.util.stream.Collectors;
  * │ Python         │ Full ast + async │ radon-compat     │ ~65% (pyright)     │ ~8/10        │
  * │ Go             │ go/types full    │ gocyclo-compat   │ ~80% (go/types)    │ ~8.5/10      │
  * │ Ruby           │ Tree-sitter      │ rubocop-compat   │ ~40% (heuristic)   │ ~6.5/10      │
- * │ Dart/Flutter   │ Full AST         │ dart_code_metrics│ ~85% (Dart LSP)    │ ~9/10
  * └────────────────┴──────────────────┴──────────────────┴────────────────────┴──────────────┘
  *
  * ARCHITECTURE — TWO-PASS PARSING
@@ -78,18 +77,16 @@ public class ASTParserService {
     private final GitHubApiClient          githubService;
     private final TreeSitterBridgeService  treeSitterBridge;
     private final LanguageToolBridgeService langToolBridge;
-    private final DartAnalysisBridgeService  dartBridge;
     private final ObjectMapper             objectMapper;
     private final ExecutorService          executorService;
 
     public ASTParserService(GitHubApiClient githubService,
                             TreeSitterBridgeService treeSitterBridge,
-                            LanguageToolBridgeService langToolBridge,DartAnalysisBridgeService dartBridge) {
+                            LanguageToolBridgeService langToolBridge) {
         this.githubService    = githubService;
         this.treeSitterBridge = treeSitterBridge;
         this.langToolBridge   = langToolBridge;
         this.objectMapper     = new ObjectMapper();
-        this.dartBridge       = dartBridge;
         this.executorService  = Executors.newFixedThreadPool(
                 Math.max(4, Runtime.getRuntime().availableProcessors())
         );
@@ -145,15 +142,16 @@ public class ASTParserService {
         Map<String, FlowNode> allNodes = new ConcurrentHashMap<>();
         List<FlowEdge>        allEdges = Collections.synchronizedList(new ArrayList<>());
 
-        // Build solver-aware Java parser (once, after Pass 1 is complete)
-        JavaParser solverJavaParser = JavaSymbolSolverService.buildSolverAwareParser(symbolIndex);
-
         List<CompletableFuture<Void>> parseFutures = fileContents.entrySet().stream()
                                                              .map(entry -> CompletableFuture.runAsync(() -> {
                                                                  String filePath = entry.getKey();
                                                                  String content  = entry.getValue();
                                                                  String language = detectLanguageFromPath(filePath);
                                                                  if (language == null) return;
+                                                                 // Build a per-thread parser — JavaParser is NOT thread-safe;
+                                                                 // sharing one instance across concurrent workers corrupts
+                                                                 // internal parser state (jj_scanpos, token buffers).
+                                                                 JavaParser solverJavaParser = JavaSymbolSolverService.buildSolverAwareParser(symbolIndex);
                                                                  try {
                                                                      parseFilePass2(filePath, content, language,
                                                                             solverJavaParser, symbolIndex, allNodes, allEdges);
@@ -229,16 +227,6 @@ public class ASTParserService {
         byLanguage.getOrDefault("ruby", Map.of())
                 .forEach((fp, content) -> indexViaBridgeSingle(fp, content, "ruby", symbolIndex));
 
-        Map<String, String> dartFiles = byLanguage.getOrDefault("dart", Map.of());
-        if (!dartFiles.isEmpty()) {
-            boolean handled = dartBridge.isAvailable()
-                                      && dartBridge.indexBatch(dartFiles, symbolIndex);
-            if (!handled) {
-                // Fallback: Tree-sitter for node/CC, no type resolution in Pass 1
-                indexViaBridgeFallback(dartFiles, "dart", symbolIndex);
-            }
-        }
-
         // ── Java: JavaParser + JavaSymbolSolverService ────────────────────────
         // Parse each file with plain JavaParser (no solver yet — solver needs the index)
         JavaParser plainParser = new JavaParser();
@@ -303,8 +291,6 @@ public class ASTParserService {
             case "typescript" -> parseWithToolBridge(filePath, content, "typescript", symbolIndex, nodes, edges);
             case "python"     -> parseWithToolBridge(filePath, content, "python", symbolIndex, nodes, edges);
             case "go"         -> parseWithToolBridge(filePath, content, "go", symbolIndex, nodes, edges);
-            case "dart"       -> parseDartFile(filePath, content, symbolIndex, nodes, edges);
-
             case "javascript",
                  "ruby"       -> parseViaTreeSitter(filePath, content, language, symbolIndex, nodes, edges);
             default           -> parseGenericFile(filePath, content, nodes);
@@ -403,87 +389,6 @@ public class ASTParserService {
             logger.warn("Tree-sitter parse error for {} ({}): {}", filePath, language, e.getMessage());
         }
     }
-    private void parseDartFile(String filePath, String content,
-                               CrossFileSymbolIndex symbolIndex,
-                               Map<String, FlowNode> nodes,
-                               List<FlowEdge> edges) {
-
-        // ── Try Dart Analysis Server first ────────────────────────────────────
-        if (dartBridge.isAvailable()) {
-            DartAnalysisBridgeService.DartParseResult result =
-                    dartBridge.parseFile(filePath, content, symbolIndex);
-
-            if (result != null) {
-                mapDartResultToGraph(result, filePath, symbolIndex, nodes, edges);
-                logger.debug("Dart Analysis Server parsed {} nodes, {} edges from {}",
-                        result.nodes().size(), result.edges().size(), filePath);
-                return;
-            }
-        }
-
-        // ── Fallback: Tree-sitter Dart grammar ────────────────────────────────
-        logger.debug("Dart Analysis Server unavailable for {} — using Tree-sitter fallback", filePath);
-        parseViaTreeSitter(filePath, content, "dart", symbolIndex, nodes, edges);
-    }
-
-    /**
-     * Map DartAnalysisBridgeService results into FlowNode / FlowEdge.
-     *
-     * Dart nodes map directly — the bridge already computes CC, class context,
-     * return type, and isAsync. Edges are post-resolved via the symbol index
-     * to catch any targets the LSP couldn't resolve (e.g. package: imports
-     * not present in the temp workspace).
-     */
-    private void mapDartResultToGraph(
-            DartAnalysisBridgeService.DartParseResult result,
-            String filePath,
-            CrossFileSymbolIndex symbolIndex,
-            Map<String, FlowNode> nodes,
-            List<FlowEdge> edges) {
-
-        for (DartAnalysisBridgeService.DartNode dn : result.nodes()) {
-            FlowNode node = FlowNode.builder()
-                                    .id(dn.id())
-                                    .label(dn.label())
-                                    .type(dn.classContext() != null ? FlowNode.NodeType.METHOD : FlowNode.NodeType.FUNCTION)
-                                    .status(FlowNode.NodeStatus.UNCHANGED)
-                                    .filePath(dn.filePath())
-                                    .startLine(dn.startLine())
-                                    .endLine(dn.endLine())
-                                    .returnType(dn.returnType())
-                                    .annotations(new HashSet<>())   // Dart decorators not mapped to annotations
-                                    .cyclomaticComplexity(dn.cyclomaticComplexity())
-                                    .build();
-            nodes.putIfAbsent(dn.id(), node);
-        }
-
-        for (DartAnalysisBridgeService.DartEdge de : result.edges()) {
-            String resolvedTo = de.to();
-
-            // Attempt symbol index improvement on raw "receiver.method" targets
-            if (!resolvedTo.contains(":")) {
-                String[] parts    = resolvedTo.split("\\.", 2);
-                String   receiver = parts.length == 2 ? parts[0] : null;
-                String   method   = parts.length == 2 ? parts[1] : parts[0];
-                String   callerCls = extractCallerClass(de.from(), filePath);
-
-                String better = symbolIndex.resolve(filePath, callerCls, receiver, method);
-                if (better != null) resolvedTo = better;
-            }
-
-            if (!resolvedTo.equals(de.from())) {
-                edges.add(FlowEdge.builder()
-                                  .from(de.from())
-                                  .to(resolvedTo)
-                                  .edgeType(FlowEdge.EdgeType.METHOD_CALL)
-                                  .status(FlowEdge.EdgeStatus.UNCHANGED)
-                                  .sourceLine(de.sourceLine())
-                                  .context(FlowEdge.CallContext.METHOD_BODY)
-                                  .build());
-            }
-        }
-    }
-
     /**
      * Map a bridge result (from either Tier 2 tools or Tree-sitter) into the
      * FlowNode/FlowEdge domain model.
@@ -651,13 +556,12 @@ public class ASTParserService {
         String snippet = content.length() > 120
                                  ? content.substring(0, 120).replace("\n", "\\n") + "..."
                                  : content.replace("\n", "\\n");
-        logger.warn("JavaParser could not parse {} ({} chars). Content: [{}]",
-                filePath, content.length(), snippet);
-        if (!result.getProblems().isEmpty()) {
-            logger.warn("JavaParser problems for {}: {}", filePath,
-                    result.getProblems().stream().limit(3)
-                            .map(Object::toString).collect(Collectors.joining(" | ")));
-        }
+        logger.warn("[java-parser] SKIP {} ({} chars) — {} problems: {}",
+                filePath, content.length(),
+                result.getProblems().size(),
+                result.getProblems().stream().limit(2)
+                        .map(com.github.javaparser.Problem::getMessage)
+                        .collect(Collectors.joining("; ")));
     }
 
     private String detectLanguageFromPath(String path) {
@@ -669,7 +573,6 @@ public class ASTParserService {
         if (lower.endsWith(".py"))   return "python";
         if (lower.endsWith(".go"))   return "go";
         if (lower.endsWith(".rb"))   return "ruby";
-        if (lower.endsWith(".dart")) return "dart";
         return null;
     }
 
@@ -742,7 +645,7 @@ public class ASTParserService {
 
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
-            ".java", ".js", ".ts", ".py", ".rb", ".go", ".dart");
+            ".java", ".js", ".ts", ".py", ".rb", ".go");
     private static final List<String> IGNORED_PATH_SEGMENTS = List.of(
             "/node_modules/", "/dist/", "/build/", "/target/",
             "/out/", "/vendor/", "/.git/", "/.idea/", "/.vscode/");

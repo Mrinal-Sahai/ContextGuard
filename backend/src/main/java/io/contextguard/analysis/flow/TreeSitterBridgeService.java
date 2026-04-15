@@ -26,7 +26,7 @@ import java.util.*;
  * running tree-sitter-http-server.js on port 3000.
  *
  * Bridge endpoints used:
- *   GET  /health  → { status, tsc, pyright, goTypes, dart }
+ *   GET  /health  → { status, tsc, pyright, goTypes }
  *   POST /parse   → { language, filePath, content } → { nodes, edges, error }
  *
  * Public API is unchanged so ASTParserService requires no edits.
@@ -102,11 +102,14 @@ public class TreeSitterBridgeService {
 
         JsonNode errorNode = response.get("error");
         if (errorNode != null && !errorNode.isNull() && !errorNode.asText().isBlank()) {
-            throw new TreeSitterParseException(
-                    "Tree-sitter error for " + filePath + ": " + errorNode.asText());
+            // JS bridge already prefixes "Tree-sitter error for <file>:" — don't double-wrap
+            throw new TreeSitterParseException(errorNode.asText());
         }
 
-        return TreeSitterResult.fromJson(response);
+        TreeSitterResult result = TreeSitterResult.fromJson(response);
+        logger.debug("[tree-sitter] parsed {} → {} nodes, {} edges",
+                filePath, result.nodes.size(), result.edges.size());
+        return result;
     }
 
     /**

@@ -155,11 +155,27 @@ function extractTypeScriptSymbols(sourceFile, filePath, checker, ts,
       return;
     }
 
-    // Function / method declarations
-    if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) ||
-        ts.isArrowFunction(node) && node.parent && ts.isVariableDeclarator(node.parent)) {
-      const nameNode = node.name;
-      const funcName = nameNode ? nameNode.getText() : null;
+    // Named function / method declarations
+    if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) {
+      const funcName = node.name ? node.name.getText() : null;
+      if (funcName) {
+        const nodeId = currentClass
+            ? `${filePath}:${currentClass}.${funcName}`
+            : `${filePath}:${funcName}`;
+        symbols.push({
+          nodeId,
+          label:        funcName,
+          classContext: currentClass,
+          filePath,
+          language:     'typescript',
+        });
+      }
+    }
+
+    // Arrow functions assigned to variables: const fn = () => {}
+    // node.name is always null for arrow functions; the name lives on the parent VariableDeclaration.
+    if (ts.isArrowFunction(node) && node.parent && ts.isVariableDeclaration(node.parent)) {
+      const funcName = node.parent.name.getText();
       if (funcName) {
         const nodeId = currentClass
             ? `${filePath}:${currentClass}.${funcName}`

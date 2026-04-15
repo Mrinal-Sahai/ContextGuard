@@ -81,7 +81,7 @@ import java.util.List;
  * │                                │        │ in a separate PR or repo).      │
  * └────────────────────────────────┴────────┴──────────────────────────────────┘
  *
- * TOTAL WEIGHTS: 0.20 + 0.30 + 0.20 + 0.20 + 0.10 = 1.00 ✓
+ * TOTAL WEIGHTS: 0.20 + 0.25 + 0.15 + 0.20 + 0.10 + 0.10 = 1.00 ✓
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  * FILE-LEVEL RISK NUMERIC MAPPING
@@ -138,11 +138,19 @@ public class RiskScoringEngine {
     /** Mean file-level risk across all changed files */
     private static final double W_AVERAGE_RISK      = 0.20;
 
-    /** Highest individual file risk in the PR */
-    private static final double W_PEAK_RISK         = 0.30;
+    /**
+     * Highest individual file risk in the PR.
+     * Reduced from 0.30 → 0.25: SAST findings now carry direct security evidence,
+     * so peak file risk no longer needs to carry as much weight alone.
+     */
+    private static final double W_PEAK_RISK         = 0.25;
 
-    /** Cognitive complexity delta, normalized */
-    private static final double W_COMPLEXITY        = 0.20;
+    /**
+     * Cognitive complexity delta, normalized.
+     * Reduced from 0.20 → 0.15: complexity is now a supplementary signal
+     * to SAST findings, which are stronger direct evidence of defects.
+     */
+    private static final double W_COMPLEXITY        = 0.15;
 
     /** Proportion of files on critical execution paths */
     private static final double W_CRITICAL_DENSITY  = 0.20;
@@ -150,10 +158,25 @@ public class RiskScoringEngine {
     /** Proportion of changed prod files with no test changes */
     private static final double W_TEST_COVERAGE_GAP = 0.10;
 
+    /**
+     * SAST findings signal — Semgrep OSS rules or GitHub CodeQL alerts.
+     * Weight 0.10: confirmed security/bug findings are ground truth, not inference.
+     * Normalized: signal = findings / (SAST_PIVOT + findings) where PIVOT = 3.
+     * At 3 findings → signal = 0.50 (moderate risk injection).
+     * At 6 findings → signal = 0.67 (high risk injection).
+     * Justification: each Semgrep finding represents a confirmed code pattern
+     * associated with a known vulnerability class (CWE). This is the same
+     * enrichment used by CodeRabbit and SonarQube to ground LLM risk output.
+     */
+    private static final double W_SAST_FINDINGS     = 0.10;
+
+    /** SAST saturation pivot: 3 findings = 0.50 signal */
+    private static final double SAST_PIVOT          = 3.0;
+
     // Sanity-check at class load time
     static {
         double sum = W_AVERAGE_RISK + W_PEAK_RISK + W_COMPLEXITY
-                             + W_CRITICAL_DENSITY + W_TEST_COVERAGE_GAP;
+                             + W_CRITICAL_DENSITY + W_TEST_COVERAGE_GAP + W_SAST_FINDINGS;
         assert Math.abs(sum - 1.0) < 1e-9
                 : "RiskScoringEngine weights must sum to 1.0, got: " + sum;
     }
@@ -221,13 +244,26 @@ public class RiskScoringEngine {
                                          ? 1.0 - ((double) prodFilesWithTestChanges / prodFiles)
                                          : 0.0;
 
+        // ── Signal 6: SAST findings (Semgrep / GitHub CodeQL) ─────────────────
+        // Ground-truth findings from static analysis — confirmed code patterns
+        // associated with known vulnerability classes. Not LLM inference.
+        // Normalization: signal = count / (SAST_PIVOT + count)
+        //   0 findings → 0.00 (no SAST evidence)
+        //   1 finding  → 0.25 (one confirmed pattern)
+        //   3 findings → 0.50 (pivot — moderate risk injection)
+        //   6 findings → 0.67 (high risk injection)
+        //  10 findings → 0.77 (capped effect — further findings don't linearly increase risk)
+        int    sastCount   = metrics.getSemgrepFindingCount();
+        double sastSignal  = saturate(sastCount, SAST_PIVOT);
+
         // ── Weighted aggregation ──────────────────────────────────────────────
         double overallScore =
                 (W_AVERAGE_RISK      * averageRisk)      +
                         (W_PEAK_RISK         * peakRisk)          +
                         (W_COMPLEXITY        * complexitySignal)  +
                         (W_CRITICAL_DENSITY  * criticalDensity)   +
-                        (W_TEST_COVERAGE_GAP * testCoverageGap);
+                        (W_TEST_COVERAGE_GAP * testCoverageGap)   +
+                        (W_SAST_FINDINGS     * sastSignal);
 
         overallScore = clamp(overallScore, 0.0, 1.0);
         RiskLevel level = categorize(overallScore);
@@ -269,15 +305,22 @@ public class RiskScoringEngine {
                         .weightedContribution(round3(W_AVERAGE_RISK * averageRisk))
                         .build(),
 
+                // CYCLOMATIC complexity (McCabe 1976): flat branch count, nesting-unaware.
+                // Each if/for/while/case/&&/|| adds +1 regardless of nesting depth.
+                // Signal role: DEFECT PROBABILITY — not comprehension difficulty.
+                // Distinct from Cognitive Complexity in DifficultyScoringEngine, which
+                // penalises nesting and predicts reviewer comprehension time.
                 SignalInterpretation.builder()
                         .key("complexity")
                         .label("Cyclomatic Complexity Δ")
                         .rawValue(rawComplexityDelta)
-                        .unit("new decision branches added  (pivot: 20 units = 0.50 signal)")
+                        .unit("new execution paths added (flat, nesting-unaware) — predicts defect probability, pivot: 20 = 0.50 signal")
                         .signalVerdict(interpretComplexityVerdict(rawComplexityDelta))
                         .whatItMeans(interpretComplexity(rawComplexityDelta))
-                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 CC unit ≈ +0.15 defects/KLOC. " +
-                                          "Signal = delta / (20 + delta) so it never saturates above 1.0.")
+                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 cyclomatic CC unit ≈ +0.15 defects/KLOC. " +
+                                          "McCabe (1976): CC = 1 + decision_points, nesting depth not penalised. " +
+                                          "Distinct from Cognitive Complexity (Difficulty panel) which penalises nesting and " +
+                                          "predicts comprehension time — these are complementary signals, not duplicates.")
                         .weight(W_COMPLEXITY)
                         .normalizedSignal(round3(complexitySignal))
                         .weightedContribution(round3(W_COMPLEXITY * complexitySignal))
@@ -311,6 +354,25 @@ public class RiskScoringEngine {
                         .weight(W_TEST_COVERAGE_GAP)
                         .normalizedSignal(round3(testCoverageGap))
                         .weightedContribution(round3(W_TEST_COVERAGE_GAP * testCoverageGap))
+                        .build(),
+
+                SignalInterpretation.builder()
+                        .key("sast")
+                        .label("SAST Findings")
+                        .rawValue(sastCount)
+                        .unit("confirmed findings from Semgrep OSS static analysis  (pivot: 3 findings = 0.50 signal)")
+                        .signalVerdict(sastCount == 0 ? "LOW"
+                                               : sastCount <= 2 ? "MEDIUM"
+                                                         : sastCount <= 5 ? "HIGH" : "CRITICAL")
+                        .whatItMeans(interpretSast(sastCount))
+                        .evidence("Semgrep OSS (2,000+ rules) — findings represent confirmed code patterns " +
+                                          "matching known vulnerability classes (CWE, OWASP Top 10). " +
+                                          "Unlike complexity metrics, SAST findings are ground truth: " +
+                                          "the pattern exists at an exact file + line. Each finding " +
+                                          "directly evidences a defect category, not a probability.")
+                        .weight(W_SAST_FINDINGS)
+                        .normalizedSignal(round3(sastSignal))
+                        .weightedContribution(round3(W_SAST_FINDINGS * sastSignal))
                         .build()
         );
 
@@ -321,13 +383,15 @@ public class RiskScoringEngine {
                                           .complexityContribution(round3(W_COMPLEXITY * complexitySignal))
                                           .criticalPathDensityContribution(round3(W_CRITICAL_DENSITY * criticalDensity))
                                           .testCoverageGapContribution(round3(W_TEST_COVERAGE_GAP * testCoverageGap))
+                                          .sastFindingsContribution(round3(W_SAST_FINDINGS * sastSignal))
                                           // Raw values
                                           .rawAverageRisk(round3(averageRisk))
                                           .rawPeakRisk(round3(peakRisk))
                                           .rawComplexityDelta(rawComplexityDelta)
                                           .rawCriticalDensity(round3(criticalDensity))
                                           .rawTestCoverageGap(round3(testCoverageGap))
-                                          // NEW: full signal interpretations for self-explanatory UI
+                                          .rawSastFindings(sastCount)
+                                          // Full signal interpretations for self-explanatory UI
                                           .signals(signals)
                                           .build();
 
@@ -396,15 +460,36 @@ public class RiskScoringEngine {
         }
     }
 
+    /**
+     * Cyclomatic complexity delta → defect-probability interpretation.
+     *
+     * NOTE: This is CYCLOMATIC (McCabe 1976) complexity, NOT cognitive complexity.
+     *   - Cyclomatic CC = flat branch count: each if/for/while/case/&&/|| adds +1
+     *     regardless of nesting depth. It predicts DEFECT PROBABILITY (Banker 1993).
+     *   - Cognitive CC (used in difficulty scoring) penalizes nesting: an if inside
+     *     an if scores higher than two sequential ifs. It predicts COMPREHENSION TIME
+     *     (Campbell 2018). They measure different things — that is intentional.
+     *
+     * The wording here deliberately focuses on defect rate and production risk,
+     * NOT on how hard the code is to read (that belongs in the difficulty panel).
+     */
     private String interpretComplexity(int delta) {
-        if (delta == 0) return "No cyclomatic complexity added. All changed methods are equally complex as before.";
-        if (delta < 10)  return "+" + delta + " decision branches added — modest increase. " +
-                                        "Each branch is a new path the reviewer must mentally trace and validate.";
-        if (delta < 30)  return "+" + delta + " decision branches added — moderate increase. " +
-                                        "Allocate extra focused time to trace all new conditional paths.";
-        return "+" + delta + " decision branches added — significant increase. " +
-                       "At +1 CC ≈ +0.15 defects/KLOC, this level of branching materially raises defect probability. " +
-                       "Request the author add inline comments explaining each non-obvious branch.";
+        if (delta == 0)
+            return "No new cyclomatic branches added (flat McCabe count). Every changed method " +
+                           "has the same number of execution paths as before — no new defect surfaces introduced.";
+        if (delta < 10)
+            return "+" + delta + " new execution paths (cyclomatic, nesting-unaware). " +
+                           "Banker et al. (1993): each +1 CC ≈ +0.15 defects/KLOC — modest defect risk increase. " +
+                           "Each path is a production code route that could hide a regression.";
+        if (delta < 30)
+            return "+" + delta + " new execution paths (cyclomatic). " +
+                           "Materially raises defect probability: at +1 CC ≈ +0.15 defects/KLOC, " +
+                           "this delta corresponds to roughly +" + (int)(delta * 0.15) + " projected defects/KLOC. " +
+                           "Verify each new branch has a corresponding test case.";
+        return "+" + delta + " new execution paths — significant cyclomatic complexity increase. " +
+                       "Projected defect density increase: +" + (int)(delta * 0.15) + " defects/KLOC (Banker 1993). " +
+                       "Each untested branch is a potential production incident. " +
+                       "Request the author break complex branches into named methods to reduce path count.";
     }
 
     private String interpretComplexityVerdict(int delta) {
@@ -437,6 +522,22 @@ public class RiskScoringEngine {
         return uncovered + " of " + prodFiles + " production file(s) have no corresponding test changes (" +
                        Math.round(gap * 100) + "%). Each untested file doubles its defect probability. " +
                        "Prioritise adding tests for the highest-risk uncovered files.";
+    }
+
+    private String interpretSast(int count) {
+        if (count == 0)
+            return "Semgrep found no security or bug-pattern findings in the changed files. " +
+                           "This does not guarantee absence of issues — rules cover known patterns only.";
+        if (count == 1)
+            return "1 SAST finding detected. This is a confirmed code pattern matching a known vulnerability " +
+                           "class. Review the STATIC_ANALYSIS_FINDINGS in the AI narrative and verify it applies " +
+                           "in context.";
+        if (count <= 3)
+            return count + " SAST findings detected. Each represents a confirmed code pattern (CWE/OWASP category). " +
+                           "These are ground truth — not inferences. Each one should produce a checklist item.";
+        return count + " SAST findings detected — this is a high finding density. Multiple confirmed " +
+                       "vulnerability patterns in changed files. This PR requires security-focused review " +
+                       "before merge. Consider a dedicated security pass.";
     }
 
     private double mapRiskToNumeric(RiskLevel level) {
