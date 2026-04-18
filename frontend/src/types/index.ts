@@ -73,6 +73,8 @@ export interface DiffMetrics {
   addedPublicMethods?: number;
   astAccurate?: boolean;
   semgrepFindingCount?: number;
+  /** Subset of semgrepFindingCount with Semgrep severity=ERROR (high-confidence security issues). */
+  highSeveritySastFindingCount?: number;
 }
 
 export interface FileChangeSummary {

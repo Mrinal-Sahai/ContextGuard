@@ -84,9 +84,17 @@ public class DiagramService {
             if (semgrepFindings.isEmpty()) {
                 log.info("[semgrep] 0 findings");
             } else {
+                long highSevCount = semgrepFindings.stream()
+                        .filter(io.contextguard.dto.SemgrepFinding::isHighSeverity)
+                        .count();
                 intelligence.getMetrics().setSemgrepFindingCount(semgrepFindings.size());
+                intelligence.getMetrics().setHighSeveritySastFindingCount((int) highSevCount);
                 semgrepFindings.forEach(f ->
                     log.info("[semgrep] {} {} {}:{} — {}", f.severity(), f.ruleId(), f.filePath(), f.line(), f.message()));
+                if (highSevCount > 0) {
+                    log.warn("[semgrep] {} HIGH-severity (ERROR) finding{} — will trigger HOLD verdict",
+                            highSevCount, highSevCount > 1 ? "s" : "");
+                }
             }
 
             // Step 4: AI narrative — receives call graph + Semgrep findings

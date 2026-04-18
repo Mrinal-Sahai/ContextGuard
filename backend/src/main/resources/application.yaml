@@ -41,30 +41,27 @@ ai:
     temperature: 0.1
     max-tokens: 6000
 
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: ${ANTHROPIC_MODEL:claude-sonnet-4-6}
+    max-tokens: ${ANTHROPIC_MAX_TOKENS:6000}
+
+semgrep:
+  enabled: ${SEMGREP_ENABLED:true}
+  timeout-seconds: ${SEMGREP_TIMEOUT_SECONDS:60}
+
 # ── Bridge configuration ──────────────────────────────────────────────────────
-# Docker: docker-compose.yml overrides bridge.*.url with container-network URLs.
-# Local dev: set BRIDGE_TREE_SITTER_URL and BRIDGE_DART_URL env vars, or use
-#   the defaults below (point at localhost if running bridges locally).
+# Docker: docker-compose.yml overrides bridge.tree-sitter.url with container-network URL.
+# Local dev: set BRIDGE_TREE_SITTER_URL env var, or use the default below.
 bridge:
   tree-sitter:
     url: ${BRIDGE_TREE_SITTER_URL:http://localhost:3000}
-  dart:
-    url: ${BRIDGE_DART_URL:http://localhost:3001}
 
 treesitter:
   bridge:
-    script-path: ../tree-sitter-bridge/tree-sitter-bridge.js
-    node-command: node
     timeout-ms: 10000
   batch:
     timeout-ms: 60000
-
-dart:
-  analysis:
-    flutter-sdk-path: /opt/flutter
-    timeout-ms: 15000
-    batch-timeout-ms: 120000
-    max-calls-per-file: 200
 
 logging:
   level:

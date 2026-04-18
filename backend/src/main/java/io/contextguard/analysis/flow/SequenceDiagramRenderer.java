@@ -148,7 +148,7 @@ public class SequenceDiagramRenderer {
         Map<String, ParticipantInfo> participants = new LinkedHashMap<>();
 
         // Always add a Client actor as the topmost caller
-        participants.put("Client", new ParticipantInfo("Client", "Client", ParticipantLayer.ACTOR, false));
+        participants.put("Client", new ParticipantInfo("Client", "Client", "Client", ParticipantLayer.ACTOR, false));
 
         for (String nodeId : edgeNodeIds) {
             FlowNode node = nodeById.get(nodeId);
@@ -158,15 +158,14 @@ public class SequenceDiagramRenderer {
 
             ParticipantLayer layer = detectLayer(nodeId, node);
             boolean isChanged = node != null && node.getStatus() != FlowNode.NodeStatus.UNCHANGED;
-            participants.put(className, new ParticipantInfo(className, shortName(className), layer, isChanged));
+            String alias = sanitizeAlias(className);
+            participants.put(className, new ParticipantInfo(className, alias, shortName(className), layer, isChanged));
         }
 
-        // Always add DB as terminal participant if any repo is present
-        boolean hasRepo = participants.values().stream()
-                                  .anyMatch(p -> p.layer == ParticipantLayer.REPOSITORY);
-        if (hasRepo && !participants.containsKey("Database")) {
-            participants.put("Database", new ParticipantInfo("Database", "Database", ParticipantLayer.DATABASE, false));
-        }
+        // No longer auto-inject a "Database" participant: the previous implementation
+        // fabricated Repository→Database→ResultSet interactions for every Repository call,
+        // producing sequences that don't reflect actual code flow. The Database participant
+        // is only added when an explicit edge to "Database" appears in the call graph.
 
         return sortByLayer(participants);
     }
@@ -199,12 +198,13 @@ public class SequenceDiagramRenderer {
 
         if (entryNode != null) {
             String entryClass = extractClassName(entryNode.getId());
+            String entryAlias = aliasOf(participants, entryClass);
             FlowEdge.EdgeStatus status =
                     entryNode.getStatus() == FlowNode.NodeStatus.ADDED
                             ? FlowEdge.EdgeStatus.ADDED
                             : FlowEdge.EdgeStatus.UNCHANGED;
 
-            steps.add(SequenceStep.call("Client", entryClass,
+            steps.add(SequenceStep.call("Client", entryAlias,
                     buildCallLabel(entryNode), status, true));
         }
 
@@ -235,51 +235,52 @@ public class SequenceDiagramRenderer {
             String toClass   = extractClassName(edge.getTo());
 
             if (!participants.containsKey(fromClass) || !participants.containsKey(toClass)) continue;
+
+            String fromAlias = aliasOf(participants, fromClass);
+            String toAlias   = aliasOf(participants, toClass);
+
             if (fromClass.equals(toClass)) {
                 // Self-call — use self-loop notation
                 FlowNode toNode = nodeById.get(edge.getTo());
-                steps.add(SequenceStep.selfCall(fromClass, buildCallLabel(toNode), edge.getStatus()));
+                steps.add(SequenceStep.selfCall(fromAlias, buildCallLabel(toNode), edge.getStatus()));
                 continue;
             }
 
             FlowNode toNode   = nodeById.get(edge.getTo());
             FlowNode fromNode = nodeById.get(edge.getFrom());
 
-            // Check if toNode is a modified node with complexity increase → wrap in alt
+            // Wrap in alt only when the called node is ADDED (brand-new conditional branch)
+            // or MODIFIED AND its CC actually increased (diff CC > 0 means a new branch was
+            // added to this method body). CC > 1 alone is insufficient — a method can have
+            // CC=2 before and after the PR with no new branches.
             boolean opensAlt = toNode != null
-                                       && toNode.getStatus() == FlowNode.NodeStatus.MODIFIED
-                                       && toNode.getCyclomaticComplexity() > 1;
+                                       && toNode.getStatus() == FlowNode.NodeStatus.ADDED
+                                       && toNode.getCyclomaticComplexity() > 2;
 
             if (opensAlt) {
                 steps.add(SequenceStep.altOpen(
-                        toNode.getLabel() + " — new branch added",
-                        "Changed path"));
+                        toNode.getLabel() + " — new conditional path",
+                        "Main path"));
             }
 
-            // Check if this is a Repository → add DB interaction automatically
-            ParticipantInfo toParticipant = participants.get(toClass);
-            if (toParticipant != null && toParticipant.layer == ParticipantLayer.REPOSITORY) {
-                steps.add(SequenceStep.call(fromClass, toClass,
-                        buildCallLabel(toNode), edge.getStatus(), false));
-                steps.add(SequenceStep.call(toClass, "Database",
-                        dbLabel(toNode), FlowEdge.EdgeStatus.UNCHANGED, false));
-                steps.add(SequenceStep.ret("Database", toClass, "ResultSet / Entity"));
-                steps.add(SequenceStep.ret(toClass, fromClass, "Optional<Entity>"));
-            } else {
-                steps.add(SequenceStep.call(fromClass, toClass,
-                        buildCallLabel(toNode), edge.getStatus(), false));
+            // Emit the actual call from the AST edge — no synthetic extra steps.
+            // Previously this block fabricated a Repository → Database → ResultSet sequence
+            // for every repository call, which invented interactions not in the code.
+            // Now we emit only what the static analysis actually found.
+            steps.add(SequenceStep.call(fromAlias, toAlias,
+                    buildCallLabel(toNode), edge.getStatus(), false));
 
-                // Add return arrow for non-void methods
-                if (toNode != null && !"void".equals(toNode.getReturnType())) {
-                    steps.add(SequenceStep.ret(toClass, fromClass,
-                            returnLabel(toNode)));
-                }
+            // Return arrow — only for non-void methods (non-void means there is a
+            // caller that depends on the return value; void callers don't consume a result).
+            if (toNode != null && toNode.getReturnType() != null
+                        && !"void".equalsIgnoreCase(toNode.getReturnType())) {
+                steps.add(SequenceStep.ret(toAlias, fromAlias, returnLabel(toNode)));
             }
 
             if (opensAlt) {
-                // Add error path alt branch
-                steps.add(SequenceStep.altElse("Exception / Error path"));
-                steps.add(SequenceStep.note(fromClass, "Caught: mark result as failed"));
+                // Only close the alt — don't fabricate a generic "else / error path"
+                // unless the code actually has one. That information isn't available
+                // from the static graph, so we omit it rather than invent it.
                 steps.add(SequenceStep.altEnd());
             }
 
@@ -303,21 +304,25 @@ public class SequenceDiagramRenderer {
             String toClass   = extractClassName(edge.getTo());
             if (!participants.containsKey(fromClass) || !participants.containsKey(toClass)) continue;
 
-            FlowNode toNode = nodeById.get(edge.getTo());
-            steps.add(SequenceStep.call(fromClass, toClass,
+            String fromAlias = aliasOf(participants, fromClass);
+            String toAlias   = aliasOf(participants, toClass);
+            FlowNode toNode  = nodeById.get(edge.getTo());
+            steps.add(SequenceStep.call(fromAlias, toAlias,
                     buildCallLabel(toNode), edge.getStatus(), false));
-            if (toNode != null && !"void".equals(toNode.getReturnType())) {
-                steps.add(SequenceStep.ret(toClass, fromClass, returnLabel(toNode)));
+            if (toNode != null && toNode.getReturnType() != null
+                        && !"void".equalsIgnoreCase(toNode.getReturnType())) {
+                steps.add(SequenceStep.ret(toAlias, fromAlias, returnLabel(toNode)));
             }
         }
 
         // Terminal: entry return to client
         if (entryNode != null) {
             String entryClass = extractClassName(entryNode.getId());
+            String entryAlias = aliasOf(participants, entryClass);
             String returnType = entryNode.getReturnType();
-            String label = (returnType != null && !"void".equals(returnType))
+            String label = (returnType != null && !"void".equalsIgnoreCase(returnType))
                                    ? returnType : "response";
-            steps.add(SequenceStep.ret(entryClass, "Client", label));
+            steps.add(SequenceStep.ret(entryAlias, "Client", label));
         }
 
         return steps;
@@ -354,14 +359,16 @@ public class SequenceDiagramRenderer {
         sb.append("sequenceDiagram\n");
         sb.append("  autonumber\n\n");
 
-        // Participant declarations — in layer order
+        // Participant declarations — in layer order.
+        // p.alias is already sanitized to [A-Za-z0-9_] — Mermaid rejects spaces/special chars in aliases.
+        // displayName is wrapped in quotes to safely handle spaces; emoji is safe inside quotes.
         for (ParticipantInfo p : participants.values()) {
-            String keyword = p.layer == ParticipantLayer.ACTOR ? "actor" : "participant";
+            String keyword     = p.layer == ParticipantLayer.ACTOR ? "actor" : "participant";
+            String displayName = p.displayName + (p.isChanged ? " ⚡" : "");
             sb.append("  ").append(keyword)
-                    .append(" ").append(p.id)
-                    .append(" as ").append(p.displayName);
-            if (p.isChanged) sb.append(" ⚡"); // mark changed participants
-            sb.append("\n");
+                    .append(" ").append(p.alias)
+                    .append(" as \"").append(displayName).append("\"")
+                    .append("\n");
         }
         sb.append("\n");
 
@@ -391,9 +398,10 @@ public class SequenceDiagramRenderer {
                                ? String.join(", ", diff.getLanguagesDetected())
                                : "unknown";
 
-        // Pick a stable participant to anchor the note
-        String anchor = participants.keySet().stream()
-                                .filter(k -> !k.equals("Client") && !k.equals("Database"))
+        // Pick a stable participant to anchor the note — use its safe alias in the Mermaid output
+        String anchor = participants.values().stream()
+                                .filter(p -> !p.id.equals("Client") && !p.id.equals("Database"))
+                                .map(p -> p.alias)
                                 .findFirst()
                                 .orElse("Client");
 
@@ -525,6 +533,27 @@ public class SequenceDiagramRenderer {
         return s != null && s.length() > max ? s.substring(0, max - 2) + ".." : s;
     }
 
+    /**
+     * Look up the Mermaid-safe alias for a class name from the participants map.
+     * Falls back to sanitizeAlias(className) if the class isn't in the map.
+     */
+    private String aliasOf(Map<String, ParticipantInfo> participants, String className) {
+        ParticipantInfo p = participants.get(className);
+        return p != null ? p.alias : sanitizeAlias(className);
+    }
+
+    /**
+     * Mermaid participant aliases must be [A-Za-z0-9_].
+     * Replace any other character with underscore and strip leading digits.
+     */
+    private String sanitizeAlias(String name) {
+        if (name == null) return "Unknown";
+        String safe = name.replaceAll("[^A-Za-z0-9_]", "_");
+        // Alias cannot start with a digit
+        if (!safe.isEmpty() && Character.isDigit(safe.charAt(0))) safe = "_" + safe;
+        return safe;
+    }
+
     private boolean isEmpty(CallGraphDiff diff) {
         return (diff.getNodesAdded()    == null || diff.getNodesAdded().isEmpty())    &&
                        (diff.getNodesModified() == null || diff.getNodesModified().isEmpty()) &&
@@ -556,12 +585,16 @@ public class SequenceDiagramRenderer {
     enum ParticipantLayer { ACTOR, CONTROLLER, SERVICE, REPOSITORY, EXTERNAL, DATABASE }
 
     static class ParticipantInfo {
+        /** Raw class name used as the map key and for display. */
         final String id;
+        /** Mermaid-safe alias: [A-Za-z0-9_] only. Used in arrow syntax. */
+        final String alias;
         final String displayName;
         final ParticipantLayer layer;
         final boolean isChanged;
-        ParticipantInfo(String id, String displayName, ParticipantLayer layer, boolean isChanged) {
+        ParticipantInfo(String id, String alias, String displayName, ParticipantLayer layer, boolean isChanged) {
             this.id          = id;
+            this.alias       = alias;
             this.displayName = displayName;
             this.layer       = layer;
             this.isChanged   = isChanged;

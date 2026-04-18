@@ -620,14 +620,22 @@ public class FlowExtractorService {
         metrics.setAvgChangedMethodCC(Math.round(avgChangedCC * 100.0) / 100.0);
 
         // 5 & 6. Public API surface changes.
-        //    "Public" proxy: return type is not void.
-        //    A non-void method has callers that depend on its return value.
-        //    Removing one is a breaking change; adding one expands the API surface.
+        //
+        //    For Java: FlowNode.isPublic is set from method.isPublic() in ASTParserService
+        //    — this is exact (JavaParser reads the actual access modifier keyword).
+        //
+        //    For bridge languages (TS/Python/Go/Ruby): isPublic is heuristic
+        //    (false only if name starts with '_' or '#'). Better than the old proxy but
+        //    not exact — treat the count as "approximate" for non-Java PRs.
+        //
+        //    Old (broken) proxy was: returnType != null && !void
+        //    Problem: counted private String get() as "public API";
+        //             missed public void notify() entirely.
         long removedPublic = safeList(diff.getNodesRemoved()).stream()
-                                     .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
+                                     .filter(FlowNode::isPublic)
                                      .count();
         long addedPublic = safeList(diff.getNodesAdded()).stream()
-                                   .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
+                                   .filter(FlowNode::isPublic)
                                    .count();
         metrics.setRemovedPublicMethods((int) removedPublic);
         metrics.setAddedPublicMethods((int) addedPublic);

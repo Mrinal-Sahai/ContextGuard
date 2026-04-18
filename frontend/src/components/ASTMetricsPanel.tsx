@@ -144,7 +144,7 @@ export const ASTMetricsPanel: React.FC<{
           <div className={`text-xs ${textSecondary} mb-2 flex items-center gap-0.5`}>
             Public API Δ
             <InfoTooltip
-              content="Removed public (non-void) methods = breaking changes — all callers must be updated or fail at runtime. Added = new API surface requiring documentation. API surface changes are a top-3 predictor of post-merge defects."
+              content="Removed explicitly-public methods = breaking changes — all callers must be updated or fail at runtime. Added = new API surface requiring documentation. API surface changes are a top-3 predictor of post-merge defects. Java: exact (from access modifier). TypeScript/Python/Go: heuristic (private if name starts with _ or #)."
               paper="Kim et al. (2008), IEEE TSE"
               isDarkMode={isDarkMode}
             />

@@ -237,31 +237,52 @@ public class LLMSequenceDiagramService {
         p.append("   If a component is modified: write (MOD) in its label.\n\n");
 
         p.append("4. Arrow syntax:\n");
-        p.append("   Forward call:   A ->> B: actionLabel()\n");
+        p.append("   Forward call:   A ->> B: actionLabel\n");
         p.append("   Return:         A -->> B: result\n");
-        p.append("   Self-call:      A ->> A: internalProcess()\n");
-        p.append("   DO NOT use activation markers (+ -) — they cause rendering failures.\n\n");
+        p.append("   Self-call:      A ->> A: internalProcess\n\n");
+        p.append("   FORBIDDEN arrow patterns (cause parse failures):\n");
+        p.append("   ✗  A ->>+ B: label    (activation open marker +)\n");
+        p.append("   ✗  B ->>- A: label    (activation close marker -)\n");
+        p.append("   ✗  activate B         (explicit activate statement)\n");
+        p.append("   ✗  deactivate B       (explicit deactivate statement)\n");
+        p.append("   ✗  A -> B: label      (single dash — not valid sequenceDiagram syntax)\n\n");
 
-        p.append("5. Branching:\n");
-        p.append("   alt SomeBranch\n");
-        p.append("     A ->> B: call()\n");
-        p.append("   else OtherBranch\n");
-        p.append("     A ->> B: alternativeCall()\n");
+        p.append("5. Participant aliases — the short name used in arrows:\n");
+        p.append("   MUST contain only letters, digits, underscore: [A-Za-z0-9_]\n");
+        p.append("   FORBIDDEN in aliases: spaces . / \\ @ # ( ) [ ] { } < > - +\n");
+        p.append("   ✓  participant AuthSvc as \"Auth Service\"\n");
+        p.append("   ✗  participant Auth.Service as \"Auth Service\"   (dot in alias)\n");
+        p.append("   ✗  participant Auth Service as Auth Service      (space in alias, unquoted display)\n\n");
+
+        p.append("6. Branching — ONLY use when the PR adds a real conditional path:\n");
+        p.append("   alt Condition description\n");
+        p.append("     A ->> B: call\n");
+        p.append("   else Alternative description\n");
+        p.append("     A ->> B: otherCall\n");
         p.append("   end\n\n");
-        p.append("   IMPORTANT: Never put 'return' arrows inside alt/else blocks.\n");
-        p.append("   Close all alt blocks with 'end' before emitting returns.\n\n");
+        p.append("   Rules:\n");
+        p.append("   - Every alt MUST have a matching end\n");
+        p.append("   - Never nest more than 2 alt blocks\n");
+        p.append("   - Do NOT put return arrows inside alt/else blocks\n");
+        p.append("   - Do NOT fabricate error paths that are not in the AST evidence above\n\n");
 
-        p.append("6. Notes: Note over A,B: short description\n\n");
+        p.append("7. Notes:\n");
+        p.append("   Note over A: text           (single participant)\n");
+        p.append("   Note over A,B: text         (span two participants)\n");
+        p.append("   Text must be ≤ 60 chars. No line breaks inside Notes.\n\n");
 
-        p.append("7. Labels must be SHORT (≤ 40 chars). Use natural language, not code.\n");
-        p.append("   Good: 'Validate JWT token'   Bad: 'validateToken(jwt, issuer, expiry)'\n\n");
+        p.append("8. Labels must be ≤ 40 chars. Use natural language, not raw code.\n");
+        p.append("   ✓  Validate JWT token\n");
+        p.append("   ✗  validateToken(jwt, issuer, clock.instant(), ctx)\n");
+        p.append("   No HTML tags, no markdown, no backticks, no code comments.\n\n");
 
-        p.append("8. The last line must be a return from the entry point to Client.\n\n");
+        p.append("9. The last interaction must be a return arrow from the entry point back to Client.\n\n");
 
-        p.append("9. Add a summary Note at the end:\n");
-        p.append("   Note over [first non-Client participant]: Changes: +N added / ~M modified\n\n");
+        p.append("10. Add one summary Note as the final line:\n");
+        p.append("    Note over [first non-Client alias]: PR: +N added / ~M modified\n\n");
 
-        p.append("Return ONLY the Mermaid diagram. First line must be: ---\n");
+        p.append("CRITICAL: Output ONLY the Mermaid diagram. No explanation, no preamble.\n");
+        p.append("First line of output must be exactly: ---\n");
 
         return p.toString();
     }
@@ -446,11 +467,19 @@ public class LLMSequenceDiagramService {
     }
 
     /**
-     * Validate and trim LLM output to enforce size budget.
+     * Validate and trim LLM output to enforce size budget and fix common LLM syntax errors.
      * Invalid or oversized content is trimmed deterministically.
+     *
+     * Fixes applied (in order):
+     *  1. Case-insensitive check for "sequenceDiagram" keyword
+     *  2. Activation markers (+/-) stripped — they cause parse failures in many Mermaid versions
+     *  3. Participant aliases sanitized to [A-Za-z0-9_]
+     *  4. Participant budget enforced
+     *  5. Alt/loop budget enforced; unclosed blocks closed
+     *  6. Arrow budget enforced
      */
     String validateAndTrim(String diagram) {
-        if (diagram == null || !diagram.contains("sequenceDiagram"))
+        if (diagram == null || !diagram.toLowerCase().contains("sequencediagram"))
             throw new IllegalArgumentException("LLM output missing 'sequenceDiagram' keyword");
 
         String[]     lines        = diagram.split("\n");
@@ -460,7 +489,15 @@ public class LLMSequenceDiagramService {
         int          openAlts     = 0;   // track unclosed alt blocks
         List<String> out          = new ArrayList<>(lines.length);
 
-        for (String line : lines) {
+        for (String rawLine : lines) {
+            // Strip activation markers (+/-) that LLMs commonly output incorrectly.
+            // "->>+" and "->>" are valid; "->>" with a trailing "-" or leading "+" are not.
+            // Pattern: "A ->>+ B:" → "A ->> B:"  and  "A->>-B:" → "A -->> B:"
+            String line = rawLine
+                    .replace("->>+", "->>")   // remove activation open marker
+                    .replace("->-",  "-->>")  // malformed deactivation → return arrow
+                    .replace("->>-", "-->>");  // deactivation variant
+
             String t = line.trim();
 
             // Always pass through: front-matter, theme config, diagram keywords
@@ -468,7 +505,10 @@ public class LLMSequenceDiagramService {
 
             // Participant / actor declarations
             if (t.startsWith("participant ") || t.startsWith("actor ")) {
-                if (participants < MAX_PARTICIPANTS) { out.add(line); participants++; }
+                if (participants < MAX_PARTICIPANTS) {
+                    out.add(sanitizeParticipantLine(line));
+                    participants++;
+                }
                 continue;
             }
 
@@ -506,6 +546,57 @@ public class LLMSequenceDiagramService {
         for (int i = 0; i < openAlts; i++) out.add("  end");
 
         return String.join("\n", out);
+    }
+
+    /**
+     * Sanitize a "participant Alias as DisplayName" line from LLM output.
+     *
+     * Problems LLMs commonly produce:
+     *  - Special chars in alias:  participant Foo.Bar as "Foo Bar"
+     *  - Unquoted display names:  participant FooSvc as Foo Service
+     *  - Banned chars in alias:   participant Auth/Service as Auth
+     *
+     * Fix:
+     *  - Extract alias and display parts
+     *  - Strip non-[A-Za-z0-9_] from alias
+     *  - Ensure display name is wrapped in double quotes
+     */
+    private String sanitizeParticipantLine(String line) {
+        String t = line.trim();
+        // Determine keyword (actor / participant) and strip it
+        String keyword;
+        String rest;
+        if (t.startsWith("actor ")) {
+            keyword = "actor";
+            rest    = t.substring("actor ".length()).trim();
+        } else {
+            keyword = "participant";
+            rest    = t.substring("participant ".length()).trim();
+        }
+
+        // Split on " as " (case-insensitive) to separate alias from display name
+        int asIdx = rest.toLowerCase().indexOf(" as ");
+        String alias;
+        String display;
+        if (asIdx >= 0) {
+            alias   = rest.substring(0, asIdx).trim();
+            display = rest.substring(asIdx + 4).trim();
+        } else {
+            alias   = rest.trim();
+            display = alias;
+        }
+
+        // Sanitize alias: keep only [A-Za-z0-9_], replace others with _
+        alias = alias.replaceAll("[^A-Za-z0-9_]", "_");
+        if (!alias.isEmpty() && Character.isDigit(alias.charAt(0))) alias = "_" + alias;
+        if (alias.isEmpty()) alias = "P" + (int)(Math.random() * 999);
+
+        // Ensure display name is quoted (strip existing quotes first, then re-add)
+        display = display.replaceAll("^[\"']|[\"']$", "").trim();
+
+        // Preserve leading indentation
+        String indent = line.substring(0, line.length() - line.stripLeading().length());
+        return indent + keyword + " " + alias + " as \"" + display + "\"";
     }
 
     private boolean isFrontMatter(String t) {
@@ -668,24 +759,25 @@ public class LLMSequenceDiagramService {
 
         d.append("  actor Client\n");
 
-        Set<String> participants = safeList(diff.getNodesModified())
-                                           .stream()
-                                           .map(n -> extractClass(n.getId()))
-                                           .collect(Collectors.toCollection(LinkedHashSet::new));
+        // Use LinkedHashMap to keep alias→displayName pairs together
+        Map<String, String> participants = safeList(diff.getNodesModified())
+                .stream()
+                .map(n -> extractClass(n.getId()))
+                .distinct()
+                .collect(Collectors.toMap(
+                        name -> name.replaceAll("[^A-Za-z0-9_]", "_"),  // safe alias
+                        name -> name,                                     // display name
+                        (a, b) -> a,
+                        java.util.LinkedHashMap::new));
 
-        for (String p : participants) {
-            d.append("  participant ").append(p).append("\n");
+        for (Map.Entry<String, String> e : participants.entrySet()) {
+            d.append("  participant ").append(e.getKey())
+             .append(" as \"").append(e.getValue()).append("\"\n");
         }
 
-        for (String p : participants) {
-
-            d.append("\n  Client ->> ")
-                    .append(p)
-                    .append(": Invoke modified logic\n");
-
-            d.append("  Note over ")
-                    .append(p)
-                    .append(": Internal behavior updated\n");
+        for (Map.Entry<String, String> e : participants.entrySet()) {
+            d.append("\n  Client ->> ").append(e.getKey()).append(": Invoke modified logic\n");
+            d.append("  Note over ").append(e.getKey()).append(": Internal behavior updated\n");
         }
 
         d.append("\n  Note over Client: No call graph changes detected\n");

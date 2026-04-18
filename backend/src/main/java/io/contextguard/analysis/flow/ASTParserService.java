@@ -328,6 +328,9 @@ public class ASTParserService {
                 cls.getMethods().forEach(method -> {
                     String methodId = className + "." + method.getNameAsString();
 
+                    // Interface methods are implicitly public even without the keyword.
+                    boolean pub = method.isPublic() || cls.isInterface();
+
                     FlowNode node = FlowNode.builder()
                                             .id(methodId)
                                             .label(method.getNameAsString())
@@ -339,6 +342,7 @@ public class ASTParserService {
                                             .returnType(method.getType().asString())
                                             .annotations(extractAnnotations(method))
                                             .cyclomaticComplexity(computeComplexity(method))
+                                            .isPublic(pub)
                                             .build();
 
                     nodes.putIfAbsent(methodId, node);
@@ -407,6 +411,13 @@ public class ASTParserService {
 
         // Map nodes
         for (TreeSitterBridgeService.TreeSitterResult.ParsedNode pn : parsedNodes) {
+            // Bridge languages don't expose a structured visibility field yet.
+            // Heuristic: names starting with '_' (Python/TS) or '#' (JS private fields)
+            // are treated as private; everything else defaults to public.
+            // This is best-effort — more accurate than the old "non-void = public" proxy.
+            String bridgeLabel = pn.label != null ? pn.label : "";
+            boolean bridgeIsPublic = !bridgeLabel.startsWith("_") && !bridgeLabel.startsWith("#");
+
             FlowNode node = FlowNode.builder()
                                     .id(pn.id)
                                     .label(pn.label)
@@ -418,6 +429,7 @@ public class ASTParserService {
                                     .returnType(pn.returnType)
                                     .annotations(new HashSet<>(pn.decorators))
                                     .cyclomaticComplexity(pn.cyclomaticComplexity)
+                                    .isPublic(bridgeIsPublic)
                                     .build();
             nodes.putIfAbsent(pn.id, node);
         }

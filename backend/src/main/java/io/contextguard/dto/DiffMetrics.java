@@ -43,4 +43,17 @@ public class DiffMetrics {
      */
     @Builder.Default
     private int semgrepFindingCount = 0;
+
+    /**
+     * Number of Semgrep findings with severity ERROR (high-confidence security issues).
+     * Even a single ERROR-level finding (e.g. SQLi, secret leak) should trigger HOLD
+     * regardless of the total finding count. WARNING/INFO findings do not set this counter.
+     *
+     * Semgrep severity mapping:
+     *   ERROR   → high-confidence exploitable vulnerability (maps to isHighSeverity=true)
+     *   WARNING → potential issue requiring review
+     *   INFO    → style / best-practice
+     */
+    @Builder.Default
+    private int highSeveritySastFindingCount = 0;
 }

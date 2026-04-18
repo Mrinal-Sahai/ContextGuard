@@ -290,7 +290,7 @@ public class DifficultyScoringEngine {
             // Deletion-only files (linesAdded=0) require verification, not comprehension:
             // the reviewer confirms code was correctly removed, not reads new logic.
             // This distinction affects both scan time and spread signal (see below).
-            int added = file.getLinesAdded() != null ? file.getLinesAdded() : 0;
+            int added = safeInt(file.getLinesAdded());
             if (added > 0) {
                 filesWithAdditions++;
             } else if (!isTestFile(file.getFilename())) {
