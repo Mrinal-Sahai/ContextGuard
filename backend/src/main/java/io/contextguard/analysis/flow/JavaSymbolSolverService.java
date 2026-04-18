@@ -105,7 +105,8 @@ public final class JavaSymbolSolverService {
 
         JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
         ParserConfiguration config    = new ParserConfiguration()
-                                                .setSymbolResolver(symbolSolver);
+                                                .setSymbolResolver(symbolSolver)
+                                                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
 
         return new JavaParser(config);
     }

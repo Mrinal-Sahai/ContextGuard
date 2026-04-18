@@ -65,6 +65,23 @@ public class SequenceDiagramRenderer {
     private static final int MAX_PARTICIPANTS = 10;
     private static final int MAX_SEQUENCE_STEPS = 40;
 
+    private static final Set<String> LIBRARY_CLASS_NAMES = Set.of(
+        "String", "Integer", "Long", "Boolean", "Double", "Float", "Object", "Void",
+        "List", "Map", "Set", "Optional", "Collection", "Stream", "Iterator",
+        "JsonNode", "ObjectNode", "ArrayNode", "JsonObject", "JsonArray",
+        "ResponseEntity", "HttpHeaders", "HttpEntity", "MultiValueMap",
+        "fs", "path", "http", "https", "url", "json", "crypto", "os", "util",
+        "Buffer", "process", "console",
+        "line", "data", "result", "response", "error", "node", "edge", "value"
+    );
+
+    private boolean isLibraryClass(String name) {
+        if (name == null || name.isBlank()) return true;
+        if (LIBRARY_CLASS_NAMES.contains(name)) return true;
+        if (Character.isLowerCase(name.charAt(0)) && name.equals(name.toLowerCase())) return true;
+        return false;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // PUBLIC API
     // ─────────────────────────────────────────────────────────────────────
@@ -144,17 +161,33 @@ public class SequenceDiagramRenderer {
             }
         }
 
+        // Find the topmost entry class — changed node with no incoming added edges.
+        // Use it to label the external actor more accurately than "Client".
+        Set<String> hasIncomingEdge = changedEdges.stream()
+                                                  .map(FlowEdge::getTo)
+                                                  .map(this::extractClassName)
+                                                  .collect(Collectors.toSet());
+        String entryClassName = changedNodes.stream()
+                .map(n -> extractClassName(n.getId()))
+                .filter(cn -> !hasIncomingEdge.contains(cn) && !isLibraryClass(cn))
+                .findFirst()
+                .orElse(null);
+
         // Map each nodeId to a participant layer, deduplicating by class name
         Map<String, ParticipantInfo> participants = new LinkedHashMap<>();
 
-        // Always add a Client actor as the topmost caller
-        participants.put("Client", new ParticipantInfo("Client", "Client", "Client", ParticipantLayer.ACTOR, false));
+        // Use the real orchestrator's class name as the actor label when identifiable,
+        // otherwise fall back to the generic "Client" label.
+        String actorLabel = (entryClassName != null) ? entryClassName : "Client";
+        participants.put("Client", new ParticipantInfo("Client", "Client", actorLabel, ParticipantLayer.ACTOR, false));
 
         for (String nodeId : edgeNodeIds) {
             FlowNode node = nodeById.get(nodeId);
             String className = extractClassName(nodeId);
             if (participants.containsKey(className)) continue;
             if (participants.size() >= MAX_PARTICIPANTS) break;
+            // Filter out library/runtime types — they are not architectural participants
+            if (isLibraryClass(className)) continue;
 
             ParticipantLayer layer = detectLayer(nodeId, node);
             boolean isChanged = node != null && node.getStatus() != FlowNode.NodeStatus.UNCHANGED;

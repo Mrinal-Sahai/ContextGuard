@@ -18,5 +18,15 @@ public class PRAnalysisRequest {
             message = "Invalid GitHub PR URL format"
     )
     private String prUrl;
+
     private AIProvider aiProvider;
+
+    /** Optional per-request GitHub token — used for private repos or to avoid rate limits. */
+    private String githubToken;
+
+    /** Diagram participant budget override — null means use server default (10). */
+    private Integer diagramMaxParticipants;
+
+    /** Diagram arrow budget override — null means use server default (25). */
+    private Integer diagramMaxArrows;
 }

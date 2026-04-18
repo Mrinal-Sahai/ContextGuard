@@ -229,7 +229,9 @@ public class ASTParserService {
 
         // ── Java: JavaParser + JavaSymbolSolverService ────────────────────────
         // Parse each file with plain JavaParser (no solver yet — solver needs the index)
-        JavaParser plainParser = new JavaParser();
+        JavaParser plainParser = new JavaParser(
+                new com.github.javaparser.ParserConfiguration()
+                        .setLanguageLevel(com.github.javaparser.ParserConfiguration.LanguageLevel.JAVA_17));
         List<CompletableFuture<Void>> javaFutures = byLanguage
                                                             .getOrDefault("java", Map.of()).entrySet().stream()
                                                             .map(e -> CompletableFuture.runAsync(() ->
@@ -244,6 +246,10 @@ public class ASTParserService {
 
     private void indexJavaFile(String filePath, String content,
                                JavaParser parser, CrossFileSymbolIndex symbolIndex) {
+        if (content == null || content.isBlank()) {
+            logger.debug("Pass 1 skipping {} — null or empty content", filePath);
+            return;
+        }
         try {
             ParseResult<CompilationUnit> result = parser.parse(content);
             if (!result.isSuccessful() || result.getResult().isEmpty()) return;
@@ -251,8 +257,10 @@ public class ASTParserService {
             JavaSymbolSolverService.extractClassRegistrations(cu, filePath, symbolIndex);
             JavaSymbolSolverService.extractFieldTypes(cu, filePath, symbolIndex);
             JavaSymbolSolverService.extractImports(cu, filePath, symbolIndex);
-        } catch (Exception e) {
-            logger.debug("Pass 1 Java indexing failed for {}: {}", filePath, e.getMessage());
+        } catch (Throwable e) {
+            // Catches both Exception and Error (e.g. AssertionError from JavaParser
+            // when content is malformed or a non-Java file slips through).
+            logger.warn("Pass 1 Java indexing failed for {}: {}", filePath, e.getMessage());
         }
     }
 
@@ -302,6 +310,10 @@ public class ASTParserService {
     private void parseJavaPass2(String filePath, String content, JavaParser parser,
                                 CrossFileSymbolIndex symbolIndex,
                                 Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+        if (content == null || content.isBlank()) {
+            logger.debug("Pass 2 skipping {} — null or empty content", filePath);
+            return;
+        }
         ParseResult<CompilationUnit> result;
         try {
             result = parser.parse(content);

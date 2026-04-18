@@ -107,6 +107,11 @@ services:
 
       # ── Secrets (from .env — never hardcode) ─────────────────────────────────
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:-http://localhost:8080/api/auth/github/callback}
+      JWT_SECRET: ${JWT_SECRET:-contextguard-change-this-in-production-min-32chars}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 

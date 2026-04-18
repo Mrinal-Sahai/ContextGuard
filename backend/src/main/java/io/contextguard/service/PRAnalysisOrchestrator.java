@@ -52,7 +52,7 @@ public class PRAnalysisOrchestrator {
         this.diagramService = asyncDiagramService;
     }
 
-    public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request, String githubToken) {
+    public PRAnalysisResponse analyzeOrRetrieve(PRAnalysisRequest request, String sessionGithubToken, String analyzedBy) {
 
         PRIdentifier prId = parsePRUrl(request.getPrUrl());
 
@@ -60,14 +60,15 @@ public class PRAnalysisOrchestrator {
             request.setAiProvider(AIProvider.GEMINI);
         }
 
-        // FIX: Cache check now validates headSha to prevent serving stale analysis
-        // after new commits are pushed to an open PR.
+        // Resolve effective token: request body token > session (OAuth) token > server env var
+        String effectiveToken = firstNonBlank(request.getGithubToken(), sessionGithubToken);
+        log.debug("[orchestrator] Effective token present: {}", effectiveToken != null);
+
         PRAnalysisResult cached = cacheService.findByPR(
                 prId.getOwner(), prId.getRepo(), prId.getPrNumber());
 
         if (cached != null) {
-            // Fetch lightweight PR metadata to verify current headSha
-            PRMetadata freshMeta = githubService.fetchPRMetadata(prId);
+            PRMetadata freshMeta = githubService.fetchPRMetadata(prId, effectiveToken);
             if (freshMeta.getHeadSha() != null &&
                         freshMeta.getHeadSha().equals(cached.getHeadSha())) {
                 log.info("Cache hit (SHA match) for {}/{} PR#{}", prId.getOwner(), prId.getRepo(), prId.getPrNumber());
@@ -77,16 +78,16 @@ public class PRAnalysisOrchestrator {
                     prId.getOwner(), prId.getRepo(), prId.getPrNumber());
         }
 
-        PRMetadata metadata = githubService.fetchPRMetadata(prId);
+        PRMetadata metadata = githubService.fetchPRMetadata(prId, effectiveToken);
         log.info("Fetched PR metadata: {}", metadata);
 
-        List<GitHubFile> ghFiles = githubService.fetchDiffFiles(prId);
+        List<GitHubFile> ghFiles = githubService.fetchDiffFiles(prId, effectiveToken);
         log.info("Fetched {} files for analysis", ghFiles.size());
 
         log.info("Starting analysis pipeline");
         PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider(), metadata, ghFiles);
 
-        PRAnalysisResult result = cacheService.save(prId, intelligence, metadata.getHeadSha());
+        PRAnalysisResult result = cacheService.save(prId, intelligence, metadata.getHeadSha(), analyzedBy);
 
         List<String> changedFileList = intelligence.getMetrics().getFileChanges().stream()
                                                .map(FileChangeSummary::getFilename)
@@ -97,11 +98,13 @@ public class PRAnalysisOrchestrator {
                 result,
                 intelligence,
                 metadata,
-                githubToken,
+                effectiveToken,
                 prId,
                 changedFileList,
                 request.getAiProvider(),
-                ghFiles
+                ghFiles,
+                request.getDiagramMaxParticipants(),
+                request.getDiagramMaxArrows()
         );
         log.info("Diagram and AI summary generation complete — returning response");
 
@@ -192,6 +195,13 @@ public class PRAnalysisOrchestrator {
      * Parse GitHub PR URL to extract owner, repo, and PR number.
      * Expected format: https://github.com/{owner}/{repo}/pull/{number}
      */
+    private static String firstNonBlank(String... candidates) {
+        for (String s : candidates) {
+            if (s != null && !s.isBlank()) return s;
+        }
+        return null;
+    }
+
     private PRIdentifier parsePRUrl(String prUrl) {
         String pattern = "https://github\\.com/([^/]+)/([^/]+)/pull/(\\d+)";
         java.util.regex.Pattern regex = java.util.regex.Pattern.compile(pattern);

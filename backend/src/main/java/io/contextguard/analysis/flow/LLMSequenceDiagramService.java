@@ -80,6 +80,24 @@ public class LLMSequenceDiagramService {
     static final int MAX_ARROWS       = 25;
     static final int MAX_ALT_BLOCKS   = 5;
 
+    // Class names that are library/runtime types, not architectural services.
+    // These must never appear as diagram participants — they waste the budget.
+    private static final Set<String> LIBRARY_CLASS_NAMES = Set.of(
+        // Java standard / wrapper types
+        "String", "Integer", "Long", "Boolean", "Double", "Float", "Object", "Void",
+        // Java collections
+        "List", "Map", "Set", "Optional", "Collection", "Stream", "Iterator",
+        // Jackson / JSON types (common in Spring Boot codebases)
+        "JsonNode", "ObjectNode", "ArrayNode", "JsonObject", "JsonArray",
+        // Spring HTTP types
+        "ResponseEntity", "HttpHeaders", "HttpEntity", "MultiValueMap",
+        // Node.js built-in modules (leak through TS/JS/Go parsing)
+        "fs", "path", "http", "https", "url", "json", "crypto", "os", "util",
+        "Buffer", "process", "console",
+        // Common single-identifier leaks
+        "line", "data", "result", "response", "error", "node", "edge", "value"
+    );
+
     private final AIRouter aiRouter;
     private final SequenceDiagramRenderer fallbackRenderer;
 
@@ -93,18 +111,27 @@ public class LLMSequenceDiagramService {
     // ─────────────────────────────────────────────────────────────────────────
 
     public String generate(CallGraphDiff diff, PRMetadata metadata, AIProvider provider) {
-        return generate(diff, metadata, null, provider);
+        return generate(diff, metadata, null, provider, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    public String generate(CallGraphDiff diff, PRMetadata metadata,
+                           PRIntelligenceResponse intelligence, AIProvider provider) {
+        return generate(diff, metadata, intelligence, provider, MAX_PARTICIPANTS, MAX_ARROWS);
     }
 
     /**
      * Full-context version — uses risk and difficulty assessments to annotate
      * hotspot interactions in the diagram.
+     * @param maxParticipants per-request participant budget (default: MAX_PARTICIPANTS=10)
+     * @param maxArrows       per-request arrow budget (default: MAX_ARROWS=25)
      */
     public String generate(
             CallGraphDiff diff,
             PRMetadata metadata,
             PRIntelligenceResponse intelligence,
-            AIProvider provider) {
+            AIProvider provider,
+            int maxParticipants,
+            int maxArrows) {
 
         try {
 
@@ -115,17 +142,17 @@ public class LLMSequenceDiagramService {
                 log.info("No call graph edges detected → switching to structural diagram mode");
                 return generateStructuralDiagram(diff, metadata, intelligence, provider);
             }
-            String prompt = buildPrompt(diff, metadata, intelligence);
+            String prompt = buildPrompt(diff, metadata, intelligence, maxParticipants, maxArrows);
             log.debug("Sequence diagram prompt: {} chars", prompt.length());
 
             AIClient client = aiRouter.getClient(provider);
             String raw       = client.generateSummary(prompt);
             String extracted = extractMermaidBlock(raw);
-            String validated = validateAndTrim(extracted);
+            String validated = validateAndTrim(extracted, maxParticipants, maxArrows);
 
             log.info("LLM sequence diagram generated: {} chars, " +
                              "budget: participants≤{}, arrows≤{}, altBlocks≤{}",
-                    validated.length(), MAX_PARTICIPANTS, MAX_ARROWS, MAX_ALT_BLOCKS);
+                    validated.length(), maxParticipants, maxArrows, MAX_ALT_BLOCKS);
             return validated;
 
         } catch (Exception e) {
@@ -147,6 +174,15 @@ public class LLMSequenceDiagramService {
             CallGraphDiff diff,
             PRMetadata metadata,
             PRIntelligenceResponse intelligence) {
+        return buildPrompt(diff, metadata, intelligence, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    private String buildPrompt(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence,
+            int maxParticipants,
+            int maxArrows) {
 
         StringBuilder p = new StringBuilder();
 
@@ -200,13 +236,24 @@ public class LLMSequenceDiagramService {
 
         // ── SECTION 4: SIZE BUDGET ────────────────────────────────────────────
         p.append("\n═══ SIZE BUDGET (HARD LIMITS) ═══\n");
-        p.append("Max participants (including actor + Database): ").append(MAX_PARTICIPANTS).append("\n");
-        p.append("Max arrows (forward + return combined):        ").append(MAX_ARROWS).append("\n");
+        p.append("Max participants (including actor + Database): ").append(maxParticipants).append("\n");
+        p.append("Max arrows (forward + return combined):        ").append(maxArrows).append("\n");
         p.append("Max alt/loop blocks:                           ").append(MAX_ALT_BLOCKS).append("\n");
         p.append("\nIf content exceeds limits:\n");
         p.append("  - Collapse ≥3 sequential calls to the same class into: Note over ClassName: [summary]\n");
         p.append("  - Show only the main happy path + one error/edge-case alt branch\n");
         p.append("  - Omit unchanged interactions entirely\n\n");
+
+        // ── LIBRARY PARTICIPANT FILTER ────────────────────────────────────────
+        p.append("═══ FORBIDDEN PARTICIPANTS (NEVER include these as diagram participants) ═══\n");
+        p.append("The following are runtime/library types, NOT architectural services.\n");
+        p.append("NEVER declare them as participant or actor. Ignore any edges to/from them:\n");
+        p.append("  JSON types:  JsonNode, ObjectNode, ArrayNode, JsonObject, JsonArray\n");
+        p.append("  Java stdlib: String, List, Map, Set, Optional, ResponseEntity, HttpHeaders\n");
+        p.append("  Node.js:     fs, path, http, https, url, json, crypto, os, util, Buffer\n");
+        p.append("  Variables:   line, data, result, response, error, node, edge, value\n");
+        p.append("  Rule: ANY lowercase single word (fs, path, json, line) is a variable, not a service.\n");
+        p.append("  Rule: Only include participants that are named classes in the project codebase.\n\n");
 
         // ── SECTION 5: MERMAID OUTPUT RULES ──────────────────────────────────
         p.append("═══ MERMAID OUTPUT RULES (ALL ARE STRICT) ═══\n\n");
@@ -331,9 +378,11 @@ public class LLMSequenceDiagramService {
         // --- NEW CALL RELATIONSHIPS ---
         if (!edges.isEmpty()) {
             p.append("\nNEW call relationships (use these for arrows):\n");
-            // Deduplicate by class pair to reduce noise
+            // Deduplicate by class pair and filter out library/primitive targets
             Set<String> seen = new LinkedHashSet<>();
             edges.stream()
+                    .filter(e -> !isLibraryClass(extractClass(e.getFrom()))
+                                      && !isLibraryClass(extractClass(e.getTo())))
                     .filter(e -> seen.add(extractClass(e.getFrom()) + "->" + extractClass(e.getTo())))
                     .limit(20)
                     .forEach(e ->
@@ -479,6 +528,10 @@ public class LLMSequenceDiagramService {
      *  6. Arrow budget enforced
      */
     String validateAndTrim(String diagram) {
+        return validateAndTrim(diagram, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    String validateAndTrim(String diagram, int maxParticipants, int maxArrows) {
         if (diagram == null || !diagram.toLowerCase().contains("sequencediagram"))
             throw new IllegalArgumentException("LLM output missing 'sequenceDiagram' keyword");
 
@@ -503,9 +556,10 @@ public class LLMSequenceDiagramService {
             // Always pass through: front-matter, theme config, diagram keywords
             if (isFrontMatter(t)) { out.add(line); continue; }
 
-            // Participant / actor declarations
+            // Participant / actor declarations — filter library types before counting
             if (t.startsWith("participant ") || t.startsWith("actor ")) {
-                if (participants < MAX_PARTICIPANTS) {
+                String alias = extractAliasFromParticipantLine(t);
+                if (!isLibraryClass(alias) && participants < maxParticipants) {
                     out.add(sanitizeParticipantLine(line));
                     participants++;
                 }
@@ -534,7 +588,7 @@ public class LLMSequenceDiagramService {
 
             // Arrows — enforce budget
             if (t.contains("->>") || t.contains("-->>")) {
-                if (arrows < MAX_ARROWS) { out.add(line); arrows++; }
+                if (arrows < maxArrows) { out.add(line); arrows++; }
                 continue;
             }
 
@@ -674,6 +728,23 @@ public class LLMSequenceDiagramService {
 
     private String safe(String s)           { return s != null ? s : ""; }
     private <T> List<T> safeList(List<T> l) { return l != null ? l : Collections.emptyList(); }
+
+    /** Returns true if the class name is a library/runtime type, not an architectural service. */
+    private boolean isLibraryClass(String name) {
+        if (name == null || name.isBlank()) return true;
+        if (LIBRARY_CLASS_NAMES.contains(name)) return true;
+        // Single all-lowercase word (e.g. "fs", "json", "path", "line") — a module or variable, not a class
+        if (Character.isLowerCase(name.charAt(0)) && name.equals(name.toLowerCase())) return true;
+        return false;
+    }
+
+    /** Extract the alias part from a "participant Alias as ..." or "actor Alias as ..." line. */
+    private String extractAliasFromParticipantLine(String line) {
+        String rest = line.startsWith("actor ") ? line.substring(6).trim()
+                                                 : line.substring(12).trim(); // "participant ".length() == 12
+        int asIdx = rest.toLowerCase().indexOf(" as ");
+        return asIdx >= 0 ? rest.substring(0, asIdx).trim() : rest.trim();
+    }
 
     private String generateStructuralDiagram(
             CallGraphDiff diff,

@@ -12,11 +12,10 @@ import java.util.List;
 /**
  * Fetches PR data from GitHub API.
  *
- * RESPONSIBILITY: Pure data ingestion, no analysis.
- *
- * GitHub API v3 REST endpoints used:
- * - GET /repos/{owner}/{repo}/pulls/{number}
- * - GET /repos/{owner}/{repo}/pulls/{number}/files
+ * Token resolution order per call:
+ *   1. overrideToken (user's OAuth token or per-request PAT from request body)
+ *   2. Server-level GITHUB_TOKEN env var (fallback in GitHubApiClient)
+ *   3. Unauthenticated
  */
 @Service
 public class GitHubIngestionService {
@@ -27,62 +26,46 @@ public class GitHubIngestionService {
         this.apiClient = apiClient;
     }
 
-    /**
-     * Fetch PR metadata (title, author, timestamps, base/head branches).
-     */
     public PRMetadata fetchPRMetadata(PRIdentifier prId) {
-
-        try {
-            var prData = apiClient.getPullRequest(
-                    prId.getOwner(), prId.getRepo(), prId.getPrNumber());
-            return PRMetadata.builder()
-                           .title(prData.get("title").asText())
-                           .author(prData.get("user").get("login").asText())
-                           .createdAt(prData.get("created_at").asText())
-                           .updatedAt(prData.get("updated_at").asText())
-                           .baseBranch(prData.get("base").get("ref").asText())
-                           .baseSha(prData.get("base").get("sha").asText())
-                           .baseRepo(prData.get("base").get("repo").get("full_name").asText())
-
-                           // Head (PR branch - possibly fork)
-                           .headBranch(prData.get("head").get("ref").asText())
-                           .headSha(prData.get("head").get("sha").asText())
-                           .headRepo(prData.get("head").get("repo").get("full_name").asText())
-                           .prUrl(prData.get("html_url").asText())
-                           .body(prData.get("body").asText())
-                           .build();
-        }
-        catch (Exception e) {
-            throw new RuntimeException("Failed to fetch PR metadata", e);
-        }
+        return fetchPRMetadata(prId, null);
     }
 
-    /**
-     * Fetch file-level changes with diffs.
-     *
-     * Returns raw diff content for each file.
-     * Analysis happens in DiffMetadataAnalyzer, not here.
-     */
+    public PRMetadata fetchPRMetadata(PRIdentifier prId, String overrideToken) {
+        var prData = apiClient.getPullRequest(
+                prId.getOwner(), prId.getRepo(), prId.getPrNumber(), overrideToken);
+
+        return PRMetadata.builder()
+                .title(prData.get("title").asText())
+                .author(prData.get("user").get("login").asText())
+                .createdAt(prData.get("created_at").asText())
+                .updatedAt(prData.get("updated_at").asText())
+                .baseBranch(prData.get("base").get("ref").asText())
+                .baseSha(prData.get("base").get("sha").asText())
+                .baseRepo(prData.get("base").get("repo").get("full_name").asText())
+                .headBranch(prData.get("head").get("ref").asText())
+                .headSha(prData.get("head").get("sha").asText())
+                .headRepo(prData.get("head").get("repo").get("full_name").asText())
+                .prUrl(prData.get("html_url").asText())
+                .body(prData.get("body").asText())
+                .build();
+    }
+
     public List<GitHubFile> fetchDiffFiles(PRIdentifier prId) {
+        return fetchDiffFiles(prId, null);
+    }
 
-        try {
+    public List<GitHubFile> fetchDiffFiles(PRIdentifier prId, String overrideToken) {
+        List<JsonNode> files = apiClient.getPullRequestFiles(
+                prId.getOwner(), prId.getRepo(), prId.getPrNumber(), overrideToken);
 
-            // Call GitHub API: GET /repos/{owner}/{repo}/pulls/{number}/files
-            List<JsonNode> files = apiClient.getPullRequestFiles(
-                    prId.getOwner(), prId.getRepo(), prId.getPrNumber());
-
-            return files.stream()
-                           .map(file -> new GitHubFile(
-                                   file.get("filename").asText(),
-                                   file.get("status").asText(), // added/modified/deleted
-                                   file.get("additions")==null ? 0 :file.get("additions").asInt(),
-                                   file.get("deletions")==null ? 0 : file.get("deletions").asInt(),
-                                   file.get("patch")==null ? "" : file.get("patch").asText() // Unified diff format
-                           ))
-                           .toList();
-        }
-        catch (Exception e) {
-            throw new RuntimeException("Failed to fetch PR files", e);
-        }
+        return files.stream()
+                .map(file -> new GitHubFile(
+                        file.get("filename").asText(),
+                        file.get("status").asText(),
+                        file.get("additions") == null ? 0 : file.get("additions").asInt(),
+                        file.get("deletions") == null ? 0 : file.get("deletions").asInt(),
+                        file.get("patch") == null ? "" : file.get("patch").asText()
+                ))
+                .toList();
     }
 }

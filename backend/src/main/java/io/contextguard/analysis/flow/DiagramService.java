@@ -60,6 +60,21 @@ public class DiagramService {
             List<String> changedFiles,
             AIProvider provider,
             List<GitHubFile> files) {
+        generateDiagram(analysisResult, intelligence, prMetadata, githubToken, prIdentifier,
+                changedFiles, provider, files, null, null);
+    }
+
+    public void generateDiagram(
+            PRAnalysisResult analysisResult,
+            PRIntelligenceResponse intelligence,
+            PRMetadata prMetadata,
+            String githubToken,
+            PRIdentifier prIdentifier,
+            List<String> changedFiles,
+            AIProvider provider,
+            List<GitHubFile> files,
+            Integer diagramMaxParticipants,
+            Integer diagramMaxArrows) {
 
         try {
             // Step 1: Extract call graph (AST diff — base vs head)
@@ -69,10 +84,9 @@ public class DiagramService {
                     safeSize(diff.getNodesAdded()), safeSize(diff.getEdgesAdded()));
 
             // Step 2: Render sequence diagram
-            // MermaidRendererService now generates `sequenceDiagram` (runtime flow)
-            // falling back to `graph LR` only for pure internal refactors with no new edges.
-//            String mermaidDiagram = mermaidRenderer.renderMermaid(diff);
-            String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, provider);
+            int maxP = diagramMaxParticipants != null ? diagramMaxParticipants : LLMSequenceDiagramService.MAX_PARTICIPANTS;
+            int maxA = diagramMaxArrows       != null ? diagramMaxArrows       : LLMSequenceDiagramService.MAX_ARROWS;
+            String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, intelligence, provider, maxP, maxA);
             log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
 
             // Step 3: Run Semgrep BEFORE the LLM — findings are injected as ground-truth
@@ -140,7 +154,7 @@ public class DiagramService {
         PRAnalysisResult analysis = repository.findById(analysisId)
                                             .orElseThrow(() -> new RuntimeException("Analysis not found: " + analysisId));
         generateDiagram(analysis, intelligence, prMetadata, githubToken,
-                prIdentifier, changedFiles, provider, files);
+                prIdentifier, changedFiles, provider, files, null, null);
     }
 
     // ─────────────────────────────────────────────────────────────────────

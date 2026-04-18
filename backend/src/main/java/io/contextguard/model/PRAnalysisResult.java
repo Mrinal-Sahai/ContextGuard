@@ -58,6 +58,9 @@ public class PRAnalysisResult {
     @Column(nullable = false)
     private Instant analyzedAt;
 
+    @Column(name = "analyzed_by")
+    private String analyzedBy;
+
     @Column(columnDefinition = "TEXT")
     private String mermaidDiagram;
 
