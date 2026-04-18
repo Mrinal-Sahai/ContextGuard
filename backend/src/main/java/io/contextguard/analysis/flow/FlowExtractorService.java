@@ -1,9 +1,7 @@
 package io.contextguard.analysis.flow;
 
-import io.contextguard.dto.DiffMetrics;
+import io.contextguard.dto.*;
 import io.contextguard.dto.PRIdentifier;
-import io.contextguard.dto.PRIntelligenceResponse;
-import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
 import org.slf4j.Logger;
@@ -150,10 +148,20 @@ public class FlowExtractorService {
         diff.setLanguagesDetected(new ArrayList<>(headGraph.languages));
 
         // Step 4: Feed AST-accurate metrics back into DiffMetrics.
-        // This replaces the early heuristic values (rawCognitiveDelta=25 from ComplexityEstimator)
-        // with method-level accurate values from the full AST parse.
-        // Must run AFTER computeDifferential() so nodesAdded/Modified/Removed are populated.
         feedbackASTMetricsIntoDiffMetrics(intelligence.getMetrics(), baseGraph, headGraph, diff);
+
+        // Step 5: Surface compilation errors from head branch parse.
+        List<CompilationError> errors = headGraph.compilationErrors != null
+                ? headGraph.compilationErrors : List.of();
+        long errorCount   = errors.stream().filter(e -> "ERROR".equals(e.getSeverity())).count();
+        long warningCount = errors.stream().filter(e -> "WARNING".equals(e.getSeverity())).count();
+        intelligence.setCompilationStatus(CompilationStatus.builder()
+                .hasErrors(!errors.isEmpty())
+                .errorCount((int) errorCount)
+                .warningCount((int) warningCount)
+                .parsedLanguages(new ArrayList<>(headGraph.languages))
+                .errors(errors)
+                .build());
 
         logger.info("Differential computed: {} added, {} removed, {} modified nodes",
                 diff.getNodesAdded().size(),

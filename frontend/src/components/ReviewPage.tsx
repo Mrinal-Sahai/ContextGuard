@@ -31,6 +31,7 @@ import { formatDate } from "../services/utility";
 import { NarrativeSection } from "./NarrativeSection";
 import { FileChangeItem } from "./FileChangeItem";
 import MergeReadinessBanner from "./MergeReadinessBanner";
+import PRStatusPanel from "./PRStatusPanel";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
@@ -328,6 +329,15 @@ const generatePDF = async () => {
           isDarkMode={isDarkMode}
         />
 
+
+        {/* PR Health Checks — merge conflicts + compilation errors */}
+        {(analysisData.mergeConflictStatus || analysisData.compilationStatus) && (
+          <PRStatusPanel
+            mergeConflictStatus={analysisData.mergeConflictStatus}
+            compilationStatus={analysisData.compilationStatus}
+            isDarkMode={isDarkMode}
+          />
+        )}
 
         {/* Blast Radius */}
         {analysisData.blastRadius && <BlastRadiusCard blastRadius={analysisData.blastRadius} isDarkMode={isDarkMode} cardBg={cardBg} textPrimary={textPrimary} textSecondary={textSecondary} />}

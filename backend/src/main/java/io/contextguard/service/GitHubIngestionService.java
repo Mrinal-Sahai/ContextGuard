@@ -47,11 +47,20 @@ public class GitHubIngestionService {
                 .headRepo(prData.get("head").get("repo").get("full_name").asText())
                 .prUrl(prData.get("html_url").asText())
                 .body(prData.get("body").asText())
+                .mergeable(prData.has("mergeable") && !prData.get("mergeable").isNull()
+                        ? prData.get("mergeable").asBoolean() : null)
+                .mergeableState(prData.has("mergeable_state")
+                        ? prData.get("mergeable_state").asText("unknown") : "unknown")
                 .build();
     }
 
     public List<GitHubFile> fetchDiffFiles(PRIdentifier prId) {
         return fetchDiffFiles(prId, null);
+    }
+
+    public List<String> getFilesChangedOnBase(
+            String owner, String repo, String headSha, String baseBranch, String overrideToken) {
+        return apiClient.getFilesChangedOnBase(owner, repo, headSha, baseBranch, overrideToken);
     }
 
     public List<GitHubFile> fetchDiffFiles(PRIdentifier prId, String overrideToken) {

@@ -30,6 +30,8 @@ export interface PRIntelligenceResponse {
   diagramVerificationNotes?: string;
   diagramMetrics?: DiagramMetrics;
   analyzedAt: string;
+  mergeConflictStatus?: MergeConflictStatus;
+  compilationStatus?: CompilationStatus;
 }
 
 export interface DiagramMetrics {
@@ -54,6 +56,8 @@ export interface PRMetadata {
   baseRepo: string;
   prUrl: string;
   body: string;
+  mergeable?: boolean | null;
+  mergeableState?: string;
 }
 
 export interface DiffMetrics {
@@ -194,3 +198,30 @@ export interface BlastRadiusAssessment {
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type DifficultyLevel = 'TRIVIAL' | 'EASY' | 'MODERATE' | 'HARD' | 'VERY_HARD';
+
+export interface MergeConflictStatus {
+  /** null = GitHub hasn't computed yet */
+  mergeable: boolean | null;
+  /** clean | dirty | unstable | blocked | behind | draft | unknown */
+  mergeableState: string;
+  hasConflicts: boolean;
+  conflictFileCount: number;
+  /** Files changed in both the PR and the base branch since fork */
+  conflictingFiles: string[];
+}
+
+export interface CompilationError {
+  file: string;
+  language: string;
+  line: number;
+  message: string;
+  severity: 'ERROR' | 'WARNING';
+}
+
+export interface CompilationStatus {
+  hasErrors: boolean;
+  errorCount: number;
+  warningCount: number;
+  parsedLanguages: string[];
+  errors: CompilationError[];
+}

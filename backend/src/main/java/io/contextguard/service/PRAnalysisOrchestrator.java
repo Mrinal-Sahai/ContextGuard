@@ -85,7 +85,7 @@ public class PRAnalysisOrchestrator {
         log.info("Fetched {} files for analysis", ghFiles.size());
 
         log.info("Starting analysis pipeline");
-        PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider(), metadata, ghFiles);
+        PRIntelligenceResponse intelligence = executeAnalysisPipeline(prId, request.getAiProvider(), metadata, ghFiles, effectiveToken);
 
         PRAnalysisResult result = cacheService.save(prId, intelligence, metadata.getHeadSha(), analyzedBy);
 
@@ -115,7 +115,8 @@ public class PRAnalysisOrchestrator {
             PRIdentifier prId,
             AIProvider provider,
             PRMetadata metadata,
-            List<GitHubFile> files) {
+            List<GitHubFile> files,
+            String githubToken) {
 
         DiffMetrics metrics = diffAnalyzer.analyzeDiff(files, prId, metadata);
         log.info("Diff metrics: {}", metrics);
@@ -129,6 +130,9 @@ public class PRAnalysisOrchestrator {
         BlastRadiusAssessment blastRadius = blastRadiusAnalyzer.analyze(metrics);
         log.info("Blast radius: {}", blastRadius);
 
+        // Merge conflict status — derived from metadata fields + compare API if conflicts detected
+        MergeConflictStatus mergeConflictStatus = buildMergeConflictStatus(prId, metadata, files, githubToken);
+
         // FIX: Use deterministic UUID derived from owner+repo+prNumber+headSha so
         // that re-analysis of the same commit produces the same analysisId.
         UUID analysisId = deriveAnalysisId(prId, metadata.getHeadSha());
@@ -141,6 +145,7 @@ public class PRAnalysisOrchestrator {
                        .narrative(null)
                        .difficulty(difficulty)
                        .blastRadius(blastRadius)
+                       .mergeConflictStatus(mergeConflictStatus)
                        .analyzedAt(Instant.now())
                        .build();
     }
@@ -161,6 +166,45 @@ public class PRAnalysisOrchestrator {
                     String.format("No analysis found for %s/%s#%d", owner, repo, prNumber));
         }
         return result.toResponse();
+    }
+
+    private MergeConflictStatus buildMergeConflictStatus(
+            PRIdentifier prId, PRMetadata metadata,
+            List<GitHubFile> prFiles, String githubToken) {
+        try {
+            Boolean mergeable = metadata.getMergeable();
+            String mergeableState = metadata.getMergeableState() != null
+                    ? metadata.getMergeableState() : "unknown";
+            boolean hasConflicts = Boolean.FALSE.equals(mergeable) || "dirty".equals(mergeableState);
+
+            List<String> conflictingFiles = List.of();
+            if (hasConflicts && !prFiles.isEmpty()
+                    && metadata.getHeadSha() != null && metadata.getBaseBranch() != null) {
+                List<String> baseChangedFiles = githubService.getFilesChangedOnBase(
+                        prId.getOwner(), prId.getRepo(),
+                        metadata.getHeadSha(), metadata.getBaseBranch(), githubToken);
+                java.util.Set<String> prFileSet = prFiles.stream()
+                        .map(GitHubFile::getFilename)
+                        .collect(java.util.stream.Collectors.toSet());
+                conflictingFiles = baseChangedFiles.stream()
+                        .filter(prFileSet::contains)
+                        .toList();
+            }
+
+            return MergeConflictStatus.builder()
+                    .mergeable(mergeable)
+                    .mergeableState(mergeableState)
+                    .hasConflicts(hasConflicts)
+                    .conflictFileCount(conflictingFiles.size())
+                    .conflictingFiles(conflictingFiles)
+                    .build();
+        } catch (Exception e) {
+            log.warn("[orchestrator] Failed to build merge conflict status: {}", e.getMessage());
+            return MergeConflictStatus.builder()
+                    .mergeable(null).mergeableState("unknown")
+                    .hasConflicts(false).conflictFileCount(0).conflictingFiles(List.of())
+                    .build();
+        }
     }
 
     /**

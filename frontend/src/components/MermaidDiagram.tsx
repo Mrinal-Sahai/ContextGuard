@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  ExternalLink,
 } from "lucide-react";
 
 interface MermaidDiagramProps {
@@ -190,6 +191,15 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
 
   const stopDragging = () => setDragging(false);
 
+  /* ---------------- Open in Mermaid Live ---------------- */
+
+  const openInMermaidLive = () => {
+    // Mermaid Live Editor accepts a base64url-encoded JSON state object
+    const state = { code: diagram, mermaid: { theme: isDarkMode ? "dark" : "default" }, updateEditor: false };
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+    window.open(`https://mermaid.live/edit#base64:${encoded}`, "_blank", "noreferrer");
+  };
+
   /* ---------------- Download ---------------- */
 
   const handleDownload = () => {
@@ -256,8 +266,12 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
             <Maximize2 size={16} />
           </button>
 
-          <button onClick={handleDownload} className={`p-2 border rounded ${btn}`}>
+          <button onClick={handleDownload} className={`p-2 border rounded ${btn}`} title="Download SVG">
             <Download size={16} />
+          </button>
+
+          <button onClick={openInMermaidLive} className={`p-2 border rounded ${btn}`} title="Open in Mermaid Live">
+            <ExternalLink size={16} />
           </button>
         </div>
       </div>

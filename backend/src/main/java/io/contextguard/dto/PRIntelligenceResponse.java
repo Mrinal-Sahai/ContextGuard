@@ -35,4 +35,6 @@ public class PRIntelligenceResponse {
     private String diagramVerificationNotes;
     private CallGraphDiff.GraphMetrics diagramMetrics;
     private Instant analyzedAt;
+    private MergeConflictStatus mergeConflictStatus;
+    private CompilationStatus compilationStatus;
 }

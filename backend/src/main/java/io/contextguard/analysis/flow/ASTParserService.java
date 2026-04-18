@@ -12,6 +12,7 @@ import com.github.javaparser.ast.stmt.CatchClause;
 import com.github.javaparser.ast.stmt.ForEachStmt;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import io.contextguard.client.GitHubApiClient;
+import io.contextguard.dto.CompilationError;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -139,8 +140,9 @@ public class ASTParserService {
         CrossFileSymbolIndex symbolIndex = buildSymbolIndex(fileContents);
 
         // ── PASS 2: Full parse with symbol resolution ─────────────────────────
-        Map<String, FlowNode> allNodes = new ConcurrentHashMap<>();
-        List<FlowEdge>        allEdges = Collections.synchronizedList(new ArrayList<>());
+        Map<String, FlowNode>  allNodes          = new ConcurrentHashMap<>();
+        List<FlowEdge>         allEdges          = Collections.synchronizedList(new ArrayList<>());
+        List<CompilationError> compilationErrors = Collections.synchronizedList(new ArrayList<>());
 
         List<CompletableFuture<Void>> parseFutures = fileContents.entrySet().stream()
                                                              .map(entry -> CompletableFuture.runAsync(() -> {
@@ -154,7 +156,7 @@ public class ASTParserService {
                                                                  JavaParser solverJavaParser = JavaSymbolSolverService.buildSolverAwareParser(symbolIndex);
                                                                  try {
                                                                      parseFilePass2(filePath, content, language,
-                                                                            solverJavaParser, symbolIndex, allNodes, allEdges);
+                                                                            solverJavaParser, symbolIndex, allNodes, allEdges, compilationErrors);
                                                                  } catch (Exception e) {
                                                                      logger.warn("Pass 2 parse failed for {}: {}", filePath, e.getMessage());
                                                                  }
@@ -170,7 +172,7 @@ public class ASTParserService {
                 allNodes.size(), allEdges.size(), fileContents.size(), duration);
         symbolIndex.logStats();
 
-        return new ParsedCallGraph(allNodes, allEdges, languagesDetected, fileCountByLanguage);
+        return new ParsedCallGraph(allNodes, allEdges, languagesDetected, fileCountByLanguage, compilationErrors);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -293,9 +295,10 @@ public class ASTParserService {
 
     private void parseFilePass2(String filePath, String content, String language,
                                 JavaParser solverParser, CrossFileSymbolIndex symbolIndex,
-                                Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+                                Map<String, FlowNode> nodes, List<FlowEdge> edges,
+                                List<CompilationError> compilationErrors) {
         switch (language) {
-            case "java"       -> parseJavaPass2(filePath, content, solverParser, symbolIndex, nodes, edges);
+            case "java"       -> parseJavaPass2(filePath, content, solverParser, symbolIndex, nodes, edges, compilationErrors);
             case "typescript" -> parseWithToolBridge(filePath, content, "typescript", symbolIndex, nodes, edges);
             case "python"     -> parseWithToolBridge(filePath, content, "python", symbolIndex, nodes, edges);
             case "go"         -> parseWithToolBridge(filePath, content, "go", symbolIndex, nodes, edges);
@@ -309,7 +312,8 @@ public class ASTParserService {
 
     private void parseJavaPass2(String filePath, String content, JavaParser parser,
                                 CrossFileSymbolIndex symbolIndex,
-                                Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+                                Map<String, FlowNode> nodes, List<FlowEdge> edges,
+                                List<CompilationError> compilationErrors) {
         if (content == null || content.isBlank()) {
             logger.debug("Pass 2 skipping {} — null or empty content", filePath);
             return;
@@ -319,11 +323,21 @@ public class ASTParserService {
             result = parser.parse(content);
         } catch (Throwable t) {
             logger.warn("JavaParser exception on {}: {}", filePath, t.getMessage());
+            compilationErrors.add(CompilationError.builder()
+                    .file(filePath).language("java").line(0)
+                    .message(t.getMessage() != null ? t.getMessage() : "Parse exception")
+                    .severity("ERROR").build());
             return;
         }
 
         if (!result.isSuccessful() || result.getResult().isEmpty()) {
             logJavaParseFailure(filePath, content, result);
+            result.getProblems().stream()
+                    .filter(p -> p.getMessage() != null && !p.getMessage().isBlank())
+                    .forEach(problem -> compilationErrors.add(CompilationError.builder()
+                            .file(filePath).language("java").line(0)
+                            .message(problem.getMessage())
+                            .severity("ERROR").build()));
             return;
         }
 
@@ -695,13 +709,16 @@ public class ASTParserService {
         public final List<FlowEdge>         edges;
         public final Set<String>            languages;
         public final Map<String, Integer>   fileCountByLanguage;
+        public final List<CompilationError> compilationErrors;
 
         public ParsedCallGraph(Map<String, FlowNode> nodes, List<FlowEdge> edges,
-                               Set<String> languages, Map<String, Integer> fileCountByLanguage) {
+                               Set<String> languages, Map<String, Integer> fileCountByLanguage,
+                               List<CompilationError> compilationErrors) {
             this.nodes               = nodes;
             this.edges               = edges;
             this.languages           = languages;
             this.fileCountByLanguage = fileCountByLanguage;
+            this.compilationErrors   = compilationErrors;
         }
     }
 }

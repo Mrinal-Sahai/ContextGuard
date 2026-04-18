@@ -107,6 +107,36 @@ public class GitHubApiClient {
         }
     }
 
+    /**
+     * Returns filenames changed on {@code baseBranch} since it diverged from {@code headSha}.
+     * Using 3-dot compare (head...base): lists commits on base not reachable from head.
+     * The files in those commits are the ones base changed after the PR was created.
+     * Intersection of this set with PR files = potential conflict candidates.
+     */
+    public List<String> getFilesChangedOnBase(
+            String owner, String repo, String headSha, String baseBranch, String overrideToken) {
+        String encodedBase = URLEncoder.encode(baseBranch, StandardCharsets.UTF_8);
+        String url = String.format("%s/repos/%s/%s/compare/%s...%s?per_page=100",
+                baseUrl, owner, repo, headSha, encodedBase);
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url, HttpMethod.GET, entityWith(overrideToken), String.class);
+            JsonNode body = objectMapper.readTree(response.getBody());
+            List<String> files = new java.util.ArrayList<>();
+            JsonNode filesNode = body.get("files");
+            if (filesNode != null && filesNode.isArray()) {
+                filesNode.forEach(f -> {
+                    JsonNode fn = f.get("filename");
+                    if (fn != null) files.add(fn.asText());
+                });
+            }
+            return files;
+        } catch (Exception e) {
+            log.warn("[github] compare {}/{}  {}...{} failed: {}", owner, repo, headSha, baseBranch, e.getMessage());
+            return List.of();
+        }
+    }
+
     public String getFileContent(String fullRepoName, String path, String ref, String overrideToken) {
         try {
             String[] parts = fullRepoName.split("/");
