@@ -581,7 +581,7 @@ public class RiskScoringEngine {
      * Rationale: Mockus et al. (2000) found that code changes accompanied by
      * test changes have ~50% lower post-merge defect rates.
      */
-    private double computeTestCoverageGap(List<FileChangeSummary> files) {
+    double computeTestCoverageGap(List<FileChangeSummary> files) {
         List<FileChangeSummary> prodFiles = files.stream()
                                                     .filter(f -> !isTestFile(f.getFilename()))
                                                     .toList();
@@ -592,19 +592,26 @@ public class RiskScoringEngine {
                                                     .toList();
         if (testFiles.isEmpty()) return 1.0;
 
-        // Pass 1: count production files with a named test match
+        // Pass 1: named match — track which test files already got credit
+        java.util.Set<String> consumedTestPaths = new java.util.HashSet<>();
         long namedMatches = prodFiles.stream()
                 .filter(prod -> {
                     String baseName = extractBaseName(prod.getFilename()).toLowerCase();
-                    return testFiles.stream().anyMatch(test ->
-                            test.getFilename().toLowerCase().contains(baseName));
+                    return testFiles.stream().anyMatch(test -> {
+                        boolean match = test.getFilename().toLowerCase().contains(baseName);
+                        if (match) consumedTestPaths.add(test.getFilename());
+                        return match;
+                    });
                 })
                 .count();
 
-        // Pass 2: integration-test fallback — each unmatched test file covers
-        // up to one uncovered production file (conservative lower-bound credit)
-        long uncoveredByName = prodFiles.size() - namedMatches;
-        long integrationCredit = Math.min(uncoveredByName, testFiles.size());
+        // Pass 2: integration-test fallback — only test files not already claimed by
+        // a named match contribute here, so a unit test can't double-count.
+        long unusedTestFiles = testFiles.stream()
+                .filter(t -> !consumedTestPaths.contains(t.getFilename()))
+                .count();
+        long uncoveredByName  = prodFiles.size() - namedMatches;
+        long integrationCredit = Math.min(uncoveredByName, unusedTestFiles);
         long totalCovered = namedMatches + integrationCredit;
 
         return 1.0 - ((double) totalCovered / prodFiles.size());
@@ -620,9 +627,11 @@ public class RiskScoringEngine {
         String lower = filename.toLowerCase();
 
         // ── Path-segment patterns (strongest signal) ─────────────────────────
-        // Matches: src/test/java, src/test/kotlin, __tests__/, tests/, test/
-        if (lower.contains("/test/") || lower.contains("/tests/")
-                || lower.contains("/__tests__/") || lower.contains("/test-")) return true;
+        // GitHub API paths are repo-root-relative (no leading /), so normalise
+        // by prepending "/" to make all segment checks uniform.
+        String p = "/" + lower;
+        if (p.contains("/test/") || p.contains("/tests/")
+                || p.contains("/__tests__/") || p.contains("/test-")) return true;
 
         // ── Java / Kotlin ─────────────────────────────────────────────────────
         // *Test.java, *Tests.java, *Spec.java, *IT.java (integration test)

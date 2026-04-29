@@ -5,10 +5,12 @@ import io.contextguard.dto.*;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
 import io.contextguard.service.AIGenerationService;
+import io.contextguard.service.SecretDetectionService;
 import io.contextguard.service.SemgrepAnalyzerService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,6 +33,7 @@ public class DiagramService {
     private final AIGenerationService aiService;
     private final LLMSequenceDiagramService llmSequenceDiagramService;
     private final SemgrepAnalyzerService semgrepAnalyzer;
+    private final SecretDetectionService secretDetector;
 
     public DiagramService(
             FlowExtractorService flowExtractor,
@@ -38,7 +41,8 @@ public class DiagramService {
             PRAnalysisRepository repository,
             AIGenerationService aiService,
             LLMSequenceDiagramService llmSequenceDiagramService,
-            SemgrepAnalyzerService semgrepAnalyzer) {
+            SemgrepAnalyzerService semgrepAnalyzer,
+            SecretDetectionService secretDetector) {
 
         this.flowExtractor           = flowExtractor;
         this.mermaidRenderer         = mermaidRenderer;
@@ -46,6 +50,7 @@ public class DiagramService {
         this.aiService               = aiService;
         this.llmSequenceDiagramService = llmSequenceDiagramService;
         this.semgrepAnalyzer         = semgrepAnalyzer;
+        this.secretDetector          = secretDetector;
     }
 
     /**
@@ -89,34 +94,42 @@ public class DiagramService {
             String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, intelligence, provider, maxP, maxA);
             log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
 
-            // Step 3: Run Semgrep BEFORE the LLM — findings are injected as ground-truth
-            // facts into the prompt so the AI explains real issues, not invented ones.
-            // Degrades gracefully: returns empty list if Semgrep is not installed.
+            // Step 3a: Pure-Java secret/credential scan — always runs, no external tools needed.
+            // Catches OpenAI/GitHub/AWS/Stripe keys, JWTs, Spring Boot hardcoded defaults, etc.
+            List<SemgrepFinding> secretFindings = secretDetector.detect(files);
+
+            // Step 3b: Semgrep SAST — runs if installed, degrades gracefully otherwise.
             log.info("[semgrep] Running SAST on {} files (available={})",
                     files.size(), semgrepAnalyzer.isSemgrepAvailable());
-            List<io.contextguard.dto.SemgrepFinding> semgrepFindings = semgrepAnalyzer.analyze(files);
-            if (semgrepFindings.isEmpty()) {
-                log.info("[semgrep] 0 findings");
-            } else {
-                long highSevCount = semgrepFindings.stream()
-                        .filter(io.contextguard.dto.SemgrepFinding::isHighSeverity)
+            List<SemgrepFinding> semgrepOnlyFindings = semgrepAnalyzer.analyze(files);
+
+            // Merge: secret findings first so they appear prominently in the AI narrative
+            List<SemgrepFinding> allFindings = new ArrayList<>();
+            allFindings.addAll(secretFindings);
+            allFindings.addAll(semgrepOnlyFindings);
+
+            if (!allFindings.isEmpty()) {
+                long highSevCount = allFindings.stream()
+                        .filter(SemgrepFinding::isHighSeverity)
                         .count();
-                intelligence.getMetrics().setSemgrepFindingCount(semgrepFindings.size());
+                intelligence.getMetrics().setSemgrepFindingCount(allFindings.size());
                 intelligence.getMetrics().setHighSeveritySastFindingCount((int) highSevCount);
-                semgrepFindings.forEach(f ->
-                    log.info("[semgrep] {} {} {}:{} — {}", f.severity(), f.ruleId(), f.filePath(), f.line(), f.message()));
+                allFindings.forEach(f ->
+                    log.warn("[sast] {} {} {}:{} — {}", f.severity(), f.ruleId(), f.filePath(), f.line(), f.message()));
                 if (highSevCount > 0) {
-                    log.warn("[semgrep] {} HIGH-severity (ERROR) finding{} — will trigger HOLD verdict",
+                    log.warn("[sast] {} HIGH-severity finding{} — will trigger HOLD verdict",
                             highSevCount, highSevCount > 1 ? "s" : "");
                 }
+            } else {
+                log.info("[sast] 0 findings (secret-scan + semgrep)");
             }
 
-            // Step 4: AI narrative — receives call graph + Semgrep findings
+            // Step 4: AI narrative — receives call graph + all SAST/secret findings
             NarrativeResult result = aiService.generateSummary(
                     files, prMetadata,
                     intelligence.getMetrics(), intelligence.getRisk(),
                     intelligence.getDifficulty(), intelligence.getBlastRadius(),
-                    diff, provider, semgrepFindings);
+                    diff, provider, allFindings);
 
             // Step 4: Enrich and persist
             intelligence.setNarrative(result.narrative());
