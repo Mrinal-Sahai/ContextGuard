@@ -29,12 +29,29 @@ public class TestImpactAnalyzer {
     }
 
     public TestImpact estimateImpact(GitHubFile file) {
-        String name = file.getFilename().toLowerCase();
-        if (name.contains("/test/") || name.contains("_test") || name.endsWith("spec.rb") || name.endsWith("test.java")) {
-            return new TestImpact(true, "Test file changed");
-        }
-        // default: low confidence
-        return new TestImpact(false, "No direct test change detected");
+        String lower = file.getFilename().toLowerCase();
+        String fileOnly = lower.substring(lower.lastIndexOf('/') + 1);
+        boolean isTest =
+                lower.contains("/test/")   || lower.contains("/tests/") || lower.contains("/__tests__/")
+                || lower.contains("/test-")
+                // Java/Kotlin
+                || lower.endsWith("test.java")  || lower.endsWith("tests.java")
+                || lower.endsWith("spec.java")  || lower.endsWith("it.java")
+                || lower.endsWith("test.kt")    || lower.endsWith("spec.kt")
+                // Python
+                || fileOnly.startsWith("test_") || lower.endsWith("_test.py") || lower.endsWith("_tests.py")
+                // JS/TS
+                || lower.endsWith(".test.js")   || lower.endsWith(".spec.js")
+                || lower.endsWith(".test.ts")   || lower.endsWith(".spec.ts")
+                || lower.endsWith(".test.tsx")  || lower.endsWith(".spec.tsx")
+                || lower.endsWith(".test.jsx")  || lower.endsWith(".spec.jsx")
+                // Ruby
+                || lower.endsWith("_spec.rb")  || lower.endsWith("_test.rb")
+                // Go
+                || lower.endsWith("_test.go");
+        return isTest
+                ? new TestImpact(true, "Test file changed")
+                : new TestImpact(false, "No direct test change detected");
     }
 }
 

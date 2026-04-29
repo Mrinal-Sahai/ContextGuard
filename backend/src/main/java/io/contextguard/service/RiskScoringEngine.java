@@ -235,14 +235,10 @@ public class RiskScoringEngine {
         double criticalDensity = (double) criticalCount / totalFiles;
 
         // ── Signal 5: Test coverage gap ───────────────────────────────────────
-        // Heuristic: count production files that have no corresponding test file change
         long prodFiles = files.stream()
                                  .filter(f -> !isTestFile(f.getFilename()))
                                  .count();
-        long prodFilesWithTestChanges = countProdFilesWithTestCoverage(files);
-        double testCoverageGap = prodFiles > 0
-                                         ? 1.0 - ((double) prodFilesWithTestChanges / prodFiles)
-                                         : 0.0;
+        double testCoverageGap = computeTestCoverageGap(files);
 
         // ── Signal 6: SAST findings (Semgrep / GitHub CodeQL) ─────────────────
         // Ground-truth findings from static analysis — confirmed code patterns
@@ -569,42 +565,96 @@ public class RiskScoringEngine {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Count production files that have a corresponding test file also changed
-     * in this PR. This is a heuristic — a test for "UserService" is assumed
-     * to be "UserServiceTest", "UserServiceSpec", etc.
+     * Compute what fraction of production files changed in this PR have NO test
+     * coverage signal. Two-pass heuristic:
+     *
+     * Pass 1 — named match: a test file whose path contains the production
+     * file's base name (e.g. UserService ↔ UserServiceTest). Strongest signal.
+     *
+     * Pass 2 — integration test fallback: when test files exist in the PR but
+     * none name-match a given production file, we credit each test file as
+     * covering one production file (capped at prodFiles). This avoids the false
+     * 100% gap for integration-test repos (e.g. Fineract, Spring) where test
+     * files like FixedDepositTest.java or test_transactions.py legitimately
+     * cover multiple production files but share no base-name prefix.
      *
      * Rationale: Mockus et al. (2000) found that code changes accompanied by
      * test changes have ~50% lower post-merge defect rates.
      */
-    private long countProdFilesWithTestCoverage(List<FileChangeSummary> files) {
+    private double computeTestCoverageGap(List<FileChangeSummary> files) {
         List<FileChangeSummary> prodFiles = files.stream()
                                                     .filter(f -> !isTestFile(f.getFilename()))
                                                     .toList();
+        if (prodFiles.isEmpty()) return 0.0;
 
         List<FileChangeSummary> testFiles = files.stream()
                                                     .filter(f -> isTestFile(f.getFilename()))
                                                     .toList();
+        if (testFiles.isEmpty()) return 1.0;
 
-        if (testFiles.isEmpty()) return 0;
+        // Pass 1: count production files with a named test match
+        long namedMatches = prodFiles.stream()
+                .filter(prod -> {
+                    String baseName = extractBaseName(prod.getFilename()).toLowerCase();
+                    return testFiles.stream().anyMatch(test ->
+                            test.getFilename().toLowerCase().contains(baseName));
+                })
+                .count();
 
-        return prodFiles.stream()
-                       .filter(prod -> {
-                           String baseName = extractBaseName(prod.getFilename()).toLowerCase();
-                           return testFiles.stream().anyMatch(test ->
-                                                                      test.getFilename().toLowerCase().contains(baseName));
-                       })
-                       .count();
+        // Pass 2: integration-test fallback — each unmatched test file covers
+        // up to one uncovered production file (conservative lower-bound credit)
+        long uncoveredByName = prodFiles.size() - namedMatches;
+        long integrationCredit = Math.min(uncoveredByName, testFiles.size());
+        long totalCovered = namedMatches + integrationCredit;
+
+        return 1.0 - ((double) totalCovered / prodFiles.size());
     }
 
-    private boolean isTestFile(String filename) {
+    /**
+     * Detect test files across all major languages and project layouts.
+     * Covers standard unit-test naming conventions, pytest-style prefix,
+     * integration-test source trees, and JS/TS spec layouts.
+     */
+    boolean isTestFile(String filename) {
         if (filename == null) return false;
         String lower = filename.toLowerCase();
-        return lower.contains("/test/")
-                       || lower.endsWith("test.java")
-                       || lower.endsWith("spec.js")
-                       || lower.endsWith("_test.py")
-                       || lower.endsWith("spec.rb")
-                       || lower.endsWith("test.ts");
+
+        // ── Path-segment patterns (strongest signal) ─────────────────────────
+        // Matches: src/test/java, src/test/kotlin, __tests__/, tests/, test/
+        if (lower.contains("/test/") || lower.contains("/tests/")
+                || lower.contains("/__tests__/") || lower.contains("/test-")) return true;
+
+        // ── Java / Kotlin ─────────────────────────────────────────────────────
+        // *Test.java, *Tests.java, *Spec.java, *IT.java (integration test)
+        if (lower.endsWith("test.java")  || lower.endsWith("tests.java")
+                || lower.endsWith("spec.java")  || lower.endsWith("it.java")
+                || lower.endsWith("test.kt")    || lower.endsWith("tests.kt")
+                || lower.endsWith("spec.kt")) return true;
+
+        // ── Python ────────────────────────────────────────────────────────────
+        // pytest: test_*.py prefix OR *_test.py / *_tests.py suffix
+        String fileOnly = lower.substring(lower.lastIndexOf('/') + 1);
+        if (fileOnly.startsWith("test_") || lower.endsWith("_test.py")
+                || lower.endsWith("_tests.py")) return true;
+
+        // ── JavaScript / TypeScript ───────────────────────────────────────────
+        // *.test.js, *.spec.js, *.test.ts, *.spec.ts (and jsx/tsx variants)
+        if (lower.endsWith(".test.js")  || lower.endsWith(".spec.js")
+                || lower.endsWith(".test.jsx") || lower.endsWith(".spec.jsx")
+                || lower.endsWith(".test.ts")  || lower.endsWith(".spec.ts")
+                || lower.endsWith(".test.tsx") || lower.endsWith(".spec.tsx")) return true;
+
+        // ── Ruby ──────────────────────────────────────────────────────────────
+        if (lower.endsWith("_spec.rb") || lower.endsWith("_test.rb")) return true;
+
+        // ── Go ────────────────────────────────────────────────────────────────
+        if (lower.endsWith("_test.go")) return true;
+
+        // ── Rust ──────────────────────────────────────────────────────────────
+        // Rust tests live in the same file (mod tests), but test files in
+        // tests/ are caught by the /tests/ path check above.
+
+        return false;
     }
 
     private String extractBaseName(String path) {
