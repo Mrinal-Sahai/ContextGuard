@@ -18,6 +18,14 @@ export interface PRAnalysisResponse {
   error: string | null;
 }
 
+export interface SemgrepFinding {
+  ruleId: string;
+  severity: 'ERROR' | 'WARNING' | 'INFO';
+  message: string;
+  filePath: string;
+  line: number;
+}
+
 export interface PRIntelligenceResponse {
   analysisId: string;
   metadata: PRMetadata;
@@ -32,6 +40,7 @@ export interface PRIntelligenceResponse {
   analyzedAt: string;
   mergeConflictStatus?: MergeConflictStatus;
   compilationStatus?: CompilationStatus;
+  sastFindings?: SemgrepFinding[];
 }
 
 export interface DiagramMetrics {

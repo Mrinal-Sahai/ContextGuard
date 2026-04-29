@@ -124,6 +124,11 @@ public class DiagramService {
                 log.info("[sast] 0 findings (secret-scan + semgrep)");
             }
 
+            // Attach findings to the response so the frontend can render the security panel
+            if (!allFindings.isEmpty()) {
+                intelligence.setSastFindings(allFindings);
+            }
+
             // Step 4: AI narrative — receives call graph + all SAST/secret findings
             NarrativeResult result = aiService.generateSummary(
                     files, prMetadata,

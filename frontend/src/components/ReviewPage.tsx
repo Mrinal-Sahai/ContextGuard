@@ -32,6 +32,7 @@ import { NarrativeSection } from "./NarrativeSection";
 import { FileChangeItem } from "./FileChangeItem";
 import MergeReadinessBanner from "./MergeReadinessBanner";
 import PRStatusPanel from "./PRStatusPanel";
+import SecurityFindingsPanel from "./SecurityFindingsPanel";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
@@ -335,6 +336,14 @@ const generatePDF = async () => {
           <PRStatusPanel
             mergeConflictStatus={analysisData.mergeConflictStatus}
             compilationStatus={analysisData.compilationStatus}
+            isDarkMode={isDarkMode}
+          />
+        )}
+
+        {/* Security Findings — secret scan + Semgrep SAST */}
+        {analysisData.sastFindings && analysisData.sastFindings.length > 0 && (
+          <SecurityFindingsPanel
+            findings={analysisData.sastFindings}
             isDarkMode={isDarkMode}
           />
         )}

@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -37,4 +38,5 @@ public class PRIntelligenceResponse {
     private Instant analyzedAt;
     private MergeConflictStatus mergeConflictStatus;
     private CompilationStatus compilationStatus;
+    private List<SemgrepFinding> sastFindings;
 }
