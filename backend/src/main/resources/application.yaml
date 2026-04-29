@@ -47,7 +47,7 @@ ai:
     max-tokens: 12000
 
   openai:
-    api-key: ${OPENAI_API_KEY:}
+    api-key: ${OPENAI_API_KEY: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}
     model: gpt-4.1
     temperature: 0.1
     max-tokens: 12000
