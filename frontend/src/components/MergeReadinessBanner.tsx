@@ -27,7 +27,7 @@ import React from "react";
 import {
   XCircle, AlertTriangle, CheckCircle2,
   Clock, Shield, Brain, Zap, GitMerge,
-  ShieldAlert, TestTube, FileWarning, CheckCircle,
+  ShieldAlert, TestTube, FileWarning, CheckCircle, Hammer,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,12 +50,20 @@ interface DifficultyAssessment {
   estimatedReviewMinutes?: number;
 }
 
+interface CompilationStatus {
+  hasErrors: boolean;
+  errorCount: number;
+  warningCount: number;
+  parsedLanguages: string[];
+}
+
 interface Props {
   risk?: RiskAssessment;
   difficulty?: DifficultyAssessment;
   semgrepFindingCount?: number;
   /** ERROR-severity Semgrep findings only — high-confidence exploitable vulnerabilities */
   highSeveritySastFindingCount?: number;
+  compilationStatus?: CompilationStatus;
   astAccurate?: boolean;
   isDarkMode: boolean;
 }
@@ -72,7 +80,7 @@ interface Signal {
   /** Whether this signal directly causes a HOLD verdict */
   severity: SignalSeverity;
   /** Lucide icon for the signal type */
-  iconKey: "shield" | "brain" | "zap" | "test" | "file" | "check";
+  iconKey: "shield" | "brain" | "zap" | "test" | "file" | "check" | "build";
 }
 
 interface ActionItem {
@@ -100,6 +108,7 @@ function computeVerdict(
   highSevSastCount?: number,
   rawTestCoverageGap?: number,
   rawPeakRisk?: number,
+  compilationStatus?: CompilationStatus,
 ): VerdictResult {
   const risk          = riskLevel?.toUpperCase()       ?? "LOW";
   const difficulty    = difficultyLevel?.toUpperCase() ?? "TRIVIAL";
@@ -109,12 +118,16 @@ function computeVerdict(
   // rawPeakRisk is 0.0–1.0; the file risk formula maps ≥0.75 → CRITICAL, ≥0.50 → HIGH
   const peakFileCritical = (rawPeakRisk ?? 0) >= 0.75;
 
+  const buildErrors   = compilationStatus?.hasErrors   ? compilationStatus.errorCount   : 0;
+  const buildWarnings = compilationStatus?.warningCount ?? 0;
+
   // ── Determine verdict ───────────────────────────────────────────────────────
   const isHold =
     risk === "CRITICAL" ||
     (risk === "HIGH" && difficulty === "VERY_HARD") ||
     highSevCount >= 1 ||   // any ERROR-level SAST finding = confirmed vulnerability
-    findings >= 3;
+    findings >= 3 ||
+    buildErrors > 0;       // compilation errors break the build — always a hard blocker
 
   const isCaution =
     !isHold && (
@@ -252,6 +265,39 @@ function computeVerdict(
     });
   }
 
+  // Compilation errors / warnings
+  if (buildErrors > 0) {
+    const langs = compilationStatus?.parsedLanguages?.join(", ") ?? "changed files";
+    signals.push({
+      label: `${buildErrors} compilation error${buildErrors > 1 ? "s" : ""} — build broken`,
+      detail: `Static parse of ${langs} found ${buildErrors} compilation error${buildErrors > 1 ? "s" : ""}. A broken build cannot be safely merged — CI will fail and the artifact cannot be produced.`,
+      severity: "BLOCKING",
+      iconKey: "build",
+    });
+    actions.push({
+      text: `Fix ${buildErrors} compilation error${buildErrors > 1 ? "s" : ""} — see Build Errors panel for file/line details`,
+      priority: "P0",
+    });
+  } else if (buildWarnings > 0) {
+    signals.push({
+      label: `${buildWarnings} compilation warning${buildWarnings > 1 ? "s" : ""}`,
+      detail: `${buildWarnings} compiler warning${buildWarnings > 1 ? "s" : ""} detected. Warnings often indicate type mismatches, unused imports, or deprecated API usage — review before merge.`,
+      severity: "WARNING",
+      iconKey: "build",
+    });
+    actions.push({
+      text: `Review ${buildWarnings} compilation warning${buildWarnings > 1 ? "s" : ""} — see Build Errors panel`,
+      priority: "P1",
+    });
+  } else if (compilationStatus && !compilationStatus.hasErrors) {
+    signals.push({
+      label: "Build: clean",
+      detail: `No compilation errors or warnings in ${compilationStatus.parsedLanguages?.join(", ") || "changed files"}.`,
+      severity: "OK",
+      iconKey: "build",
+    });
+  }
+
   // Peak file risk — surfaces when an individual file is CRITICAL-tier
   if (peakFileCritical) {
     signals.push({
@@ -339,6 +385,7 @@ const SignalIcon: React.FC<{ iconKey: Signal["iconKey"]; className?: string }> =
     case "test":   return <TestTube  className={className} />;
     case "file":   return <FileWarning className={className} />;
     case "check":  return <CheckCircle className={className} />;
+    case "build":  return <Hammer className={className} />;
   }
 };
 
@@ -349,6 +396,7 @@ const MergeReadinessBanner: React.FC<Props> = ({
   difficulty,
   semgrepFindingCount,
   highSeveritySastFindingCount,
+  compilationStatus,
   astAccurate,
   isDarkMode,
 }) => {
@@ -359,6 +407,7 @@ const MergeReadinessBanner: React.FC<Props> = ({
     highSeveritySastFindingCount,
     risk?.breakdown?.rawTestCoverageGap,
     risk?.breakdown?.rawPeakRisk,
+    compilationStatus,
   );
 
   // ── Theme ─────────────────────────────────────────────────────────────────
@@ -492,6 +541,18 @@ const MergeReadinessBanner: React.FC<Props> = ({
             <Stat icon={<Zap className="w-3.5 h-3.5" />} label="SAST"
               value={`${semgrepFindingCount} finding${semgrepFindingCount > 1 ? "s" : ""}`}
               accent={highSeveritySastFindingCount ? "CRITICAL" : "HIGH"}
+              isDarkMode={isDarkMode} />
+          )}
+          {compilationStatus?.hasErrors && (
+            <Stat icon={<Hammer className="w-3.5 h-3.5" />} label="Build"
+              value={`${compilationStatus.errorCount} error${compilationStatus.errorCount > 1 ? "s" : ""}`}
+              accent="CRITICAL"
+              isDarkMode={isDarkMode} />
+          )}
+          {compilationStatus && !compilationStatus.hasErrors && compilationStatus.warningCount > 0 && (
+            <Stat icon={<Hammer className="w-3.5 h-3.5" />} label="Build"
+              value={`${compilationStatus.warningCount} warning${compilationStatus.warningCount > 1 ? "s" : ""}`}
+              accent="MEDIUM"
               isDarkMode={isDarkMode} />
           )}
           {astAccurate && (

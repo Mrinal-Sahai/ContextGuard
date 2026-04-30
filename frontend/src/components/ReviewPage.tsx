@@ -282,6 +282,7 @@ const generatePDF = async () => {
           difficulty={analysisData.difficulty}
           semgrepFindingCount={analysisData.metrics?.semgrepFindingCount}
           highSeveritySastFindingCount={analysisData.metrics?.highSeveritySastFindingCount}
+          compilationStatus={analysisData.compilationStatus}
           astAccurate={analysisData.metrics?.astAccurate}
           isDarkMode={isDarkMode}
         />

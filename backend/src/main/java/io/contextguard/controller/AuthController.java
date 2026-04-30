@@ -24,7 +24,7 @@ public class AuthController {
     private final AuthService authService;
     private final JwtUtil jwtUtil;
 
-    @Value("${app.frontend-url:http://localhost:3001}")
+    @Value("${app.frontend-url:http://localhost:3000}")
     private String frontendUrl;
 
     /**
