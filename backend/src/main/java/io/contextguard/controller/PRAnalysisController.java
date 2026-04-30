@@ -65,7 +65,7 @@ public class PRAnalysisController {
 
     @GetMapping("/by-pr")
     public ResponseEntity<PRIntelligenceResponse> getAnalysisByPR(
-            @RequestParam String owner,
+            @RequestParam String owner
             @RequestParam String repo,
             @RequestParam Integer prNumber) {
         PRIntelligenceResponse intelligence = orchestrator.getAnalysisByPR(owner, repo, prNumber);
