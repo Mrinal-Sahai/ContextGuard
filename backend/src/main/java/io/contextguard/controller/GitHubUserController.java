@@ -71,7 +71,7 @@ public class GitHubUserController {
                         "updatedAt",   item.path("updated_at").asText(),
                         "state",       item.path("state").asText(),
                         "draft",       item.path("draft").asBoolean(false)
-                ));
+                ))
             }
 
             log.info("[github] {} review-requested PRs for {}", results.size(), user.getLogin());
