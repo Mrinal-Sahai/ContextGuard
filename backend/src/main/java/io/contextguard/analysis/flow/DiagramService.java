@@ -88,26 +88,15 @@ public class DiagramService {
             log.info("Call graph extracted: {} added nodes, {} added edges",
                     safeSize(diff.getNodesAdded()), safeSize(diff.getEdgesAdded()));
 
-            // Step 2: Render sequence diagram
-            int maxP = diagramMaxParticipants != null ? diagramMaxParticipants : LLMSequenceDiagramService.MAX_PARTICIPANTS;
-            int maxA = diagramMaxArrows       != null ? diagramMaxArrows       : LLMSequenceDiagramService.MAX_ARROWS;
-            String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, intelligence, provider, maxP, maxA);
-            log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
-
-            // Step 3a: Pure-Java secret/credential scan — always runs, no external tools needed.
-            // Catches OpenAI/GitHub/AWS/Stripe keys, JWTs, Spring Boot hardcoded defaults, etc.
+            // Security scans always run — they're cheap, require no LLM, and catch issues
+            // in broken code just as well as in compiling code.
             List<SemgrepFinding> secretFindings = secretDetector.detect(files);
-
-            // Step 3b: Semgrep SAST — runs if installed, degrades gracefully otherwise.
             log.info("[semgrep] Running SAST on {} files (available={})",
                     files.size(), semgrepAnalyzer.isSemgrepAvailable());
             List<SemgrepFinding> semgrepOnlyFindings = semgrepAnalyzer.analyze(files);
-
-            // Merge: secret findings first so they appear prominently in the AI narrative
             List<SemgrepFinding> allFindings = new ArrayList<>();
             allFindings.addAll(secretFindings);
             allFindings.addAll(semgrepOnlyFindings);
-
             if (!allFindings.isEmpty()) {
                 long highSevCount = allFindings.stream()
                         .filter(SemgrepFinding::isHighSeverity)
@@ -120,14 +109,38 @@ public class DiagramService {
                     log.warn("[sast] {} HIGH-severity finding{} — will trigger HOLD verdict",
                             highSevCount, highSevCount > 1 ? "s" : "");
                 }
+                intelligence.setSastFindings(allFindings);
             } else {
                 log.info("[sast] 0 findings (secret-scan + semgrep)");
             }
 
-            // Attach findings to the response so the frontend can render the security panel
-            if (!allFindings.isEmpty()) {
-                intelligence.setSastFindings(allFindings);
+            // Gate LLM calls: if compilation errors exist the code cannot run, so a sequence
+            // diagram and AI narrative would be meaningless — and would waste tokens.
+            io.contextguard.dto.CompilationStatus cs = intelligence.getCompilationStatus();
+            if (cs != null && cs.getErrorCount() > 0) {
+                String skipReason = String.format(
+                        "%d compilation error%s detected in %s. " +
+                        "AI services (sequence diagram and narrative) were not called — " +
+                        "generating analysis for code that does not compile wastes tokens and produces misleading results. " +
+                        "Fix the build errors, then re-analyse.",
+                        cs.getErrorCount(),
+                        cs.getErrorCount() > 1 ? "s" : "",
+                        cs.getParsedLanguages() != null ? String.join(", ", cs.getParsedLanguages()) : "changed files");
+                log.warn("[diagram] Skipping LLM calls — {}", skipReason);
+                intelligence.setAiSkipReason(skipReason);
+                analysisResult.setDiagramVerificationNotes("AI skipped: " + cs.getErrorCount() + " compilation error(s)");
+                analysisResult.setIntelligence(intelligence);
+                analysisResult.setDiagramMetrics(diff.getMetrics());
+                repository.save(analysisResult);
+                log.info("Analysis {} saved (security scans complete, AI skipped)", analysisResult.getId());
+                return;
             }
+
+            // Step 2: Render sequence diagram (LLM)
+            int maxP = diagramMaxParticipants != null ? diagramMaxParticipants : LLMSequenceDiagramService.MAX_PARTICIPANTS;
+            int maxA = diagramMaxArrows       != null ? diagramMaxArrows       : LLMSequenceDiagramService.MAX_ARROWS;
+            String mermaidDiagram = llmSequenceDiagramService.generate(diff, prMetadata, intelligence, provider, maxP, maxA);
+            log.info("Sequence diagram rendered ({} chars)", mermaidDiagram != null ? mermaidDiagram.length() : 0);
 
             // Step 4: AI narrative — receives call graph + all SAST/secret findings
             NarrativeResult result = aiService.generateSummary(
@@ -136,9 +149,7 @@ public class DiagramService {
                     intelligence.getDifficulty(), intelligence.getBlastRadius(),
                     diff, provider, allFindings);
 
-            // Step 4: Enrich and persist
             intelligence.setNarrative(result.narrative());
-
             intelligence.setRisk(result.risk());
             intelligence.setDifficulty(result.difficulty());
             analysisResult.setMermaidDiagram(mermaidDiagram);

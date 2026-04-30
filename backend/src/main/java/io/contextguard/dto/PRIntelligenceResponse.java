@@ -39,4 +39,6 @@ public class PRIntelligenceResponse {
     private MergeConflictStatus mergeConflictStatus;
     private CompilationStatus compilationStatus;
     private List<SemgrepFinding> sastFindings;
+    /** Non-null when AI services (diagram + narrative) were skipped. Explains the reason. */
+    private String aiSkipReason;
 }

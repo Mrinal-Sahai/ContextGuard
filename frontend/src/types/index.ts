@@ -41,6 +41,8 @@ export interface PRIntelligenceResponse {
   mergeConflictStatus?: MergeConflictStatus;
   compilationStatus?: CompilationStatus;
   sastFindings?: SemgrepFinding[];
+  /** Non-null when AI services (diagram + narrative) were skipped. Explains the reason. */
+  aiSkipReason?: string;
 }
 
 export interface DiagramMetrics {

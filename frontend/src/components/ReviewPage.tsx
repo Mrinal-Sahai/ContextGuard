@@ -23,6 +23,8 @@ import {
   Globe2,
   Boxes,
   Radio,
+  Hammer,
+  BrainCircuit,
 } from "lucide-react";
 
 import MermaidDiagram from "./MermaidDiagram";
@@ -356,42 +358,73 @@ const generatePDF = async () => {
 
 
 
-{analysisData.narrative && (
-        <NarrativeSection
-          narrative={analysisData.narrative}
-          isDarkMode={isDarkMode}
-        />
-)}
-
-        {/* Call Graph Diagram */}
-        {analysisData.mermaidDiagram ? (
-          <MermaidDiagram
-            diagram={analysisData.mermaidDiagram}
-            verificationNotes={analysisData.diagramVerificationNotes}
-            metrics={analysisData.diagramMetrics}
-            isDarkMode={isDarkMode}
-          />
-        ) : (
-          <div className={`border rounded-xl p-6 ${cardBg}`}>
-            <h3 className={`text-lg font-bold ${textPrimary} mb-2`}>Call Graph Diagram</h3>
-            <div className={`flex items-start gap-3 text-sm ${textSecondary}`}>
-              <Network className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
+{analysisData.aiSkipReason ? (
+          /* AI skipped notice — shown in place of both narrative and diagram */
+          <div className={`border rounded-xl p-6 border-amber-500/30 ${isDarkMode ? "bg-amber-950/20" : "bg-amber-50"}`}>
+            <div className="flex items-start gap-3 mb-4">
+              <div className="p-2 rounded-lg bg-amber-500/15 shrink-0">
+                <BrainCircuit className="w-5 h-5 text-amber-400" />
+              </div>
               <div>
-                <p className="font-medium">Diagram not yet available</p>
-                <p className="mt-1">
-                  The sequence diagram is generated after AST parsing completes.
-                  This happens asynchronously — refresh in a few seconds, or it may be unavailable
-                  if the repository uses only unsupported languages (Ruby, plain JS without type info).
+                <h3 className={`text-sm font-semibold ${isDarkMode ? "text-amber-300" : "text-amber-700"}`}>
+                  AI Analysis Not Generated
+                </h3>
+                <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? "text-amber-400/80" : "text-amber-600"}`}>
+                  The sequence diagram and AI narrative were skipped to avoid wasting tokens on code that
+                  does not compile. Generating analysis for a broken build produces misleading results.
                 </p>
-                {analysisData.diagramMetrics && (
-                  <p className="mt-2 text-xs">
-                    Partial graph data: {analysisData.diagramMetrics.totalNodes} nodes,{" "}
-                    {analysisData.diagramMetrics.totalEdges} edges, max depth {analysisData.diagramMetrics.maxDepth}
-                  </p>
-                )}
               </div>
             </div>
+            <div className={`flex items-start gap-2 p-3 rounded-lg border ${isDarkMode ? "bg-slate-800/60 border-slate-700/50" : "bg-white border-slate-200"}`}>
+              <Hammer className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <p className={`text-xs leading-relaxed ${isDarkMode ? "text-slate-300" : "text-slate-700"}`}>
+                {analysisData.aiSkipReason}
+              </p>
+            </div>
+            <p className={`text-xs mt-3 ${isDarkMode ? "text-slate-500" : "text-slate-400"}`}>
+              Fix all compilation errors shown in the Build Errors panel, then re-submit the PR URL to generate a full analysis.
+            </p>
           </div>
+        ) : (
+          <>
+            {analysisData.narrative && (
+              <NarrativeSection
+                narrative={analysisData.narrative}
+                isDarkMode={isDarkMode}
+              />
+            )}
+
+            {/* Call Graph Diagram */}
+            {analysisData.mermaidDiagram ? (
+              <MermaidDiagram
+                diagram={analysisData.mermaidDiagram}
+                verificationNotes={analysisData.diagramVerificationNotes}
+                metrics={analysisData.diagramMetrics}
+                isDarkMode={isDarkMode}
+              />
+            ) : (
+              <div className={`border rounded-xl p-6 ${cardBg}`}>
+                <h3 className={`text-lg font-bold ${textPrimary} mb-2`}>Call Graph Diagram</h3>
+                <div className={`flex items-start gap-3 text-sm ${textSecondary}`}>
+                  <Network className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Diagram not yet available</p>
+                    <p className="mt-1">
+                      The sequence diagram is generated after AST parsing completes.
+                      This happens asynchronously — refresh in a few seconds, or it may be unavailable
+                      if the repository uses only unsupported languages (Ruby, plain JS without type info).
+                    </p>
+                    {analysisData.diagramMetrics && (
+                      <p className="mt-2 text-xs">
+                        Partial graph data: {analysisData.diagramMetrics.totalNodes} nodes,{" "}
+                        {analysisData.diagramMetrics.totalEdges} edges, max depth {analysisData.diagramMetrics.maxDepth}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* File Changes */}
