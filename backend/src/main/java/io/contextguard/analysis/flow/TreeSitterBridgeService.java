@@ -137,17 +137,20 @@ public class TreeSitterBridgeService {
 
     public static class TreeSitterResult {
 
-        public final List<ParsedNode> nodes;
-        public final List<ParsedEdge> edges;
+        public final List<ParsedNode>   nodes;
+        public final List<ParsedEdge>   edges;
+        public final List<SyntaxError>  syntaxErrors;
 
-        public TreeSitterResult(List<ParsedNode> nodes, List<ParsedEdge> edges) {
-            this.nodes = nodes;
-            this.edges = edges;
+        public TreeSitterResult(List<ParsedNode> nodes, List<ParsedEdge> edges, List<SyntaxError> syntaxErrors) {
+            this.nodes        = nodes;
+            this.edges        = edges;
+            this.syntaxErrors = syntaxErrors != null ? syntaxErrors : List.of();
         }
 
         public static TreeSitterResult fromJson(JsonNode json) {
-            List<ParsedNode> nodes = new ArrayList<>();
-            List<ParsedEdge> edges = new ArrayList<>();
+            List<ParsedNode>  nodes  = new ArrayList<>();
+            List<ParsedEdge>  edges  = new ArrayList<>();
+            List<SyntaxError> errors = new ArrayList<>();
 
             JsonNode nodesArr = json.get("nodes");
             if (nodesArr != null && nodesArr.isArray())
@@ -157,7 +160,26 @@ public class TreeSitterBridgeService {
             if (edgesArr != null && edgesArr.isArray())
                 for (JsonNode e : edgesArr) edges.add(ParsedEdge.fromJson(e));
 
-            return new TreeSitterResult(nodes, edges);
+            JsonNode errorsArr = json.get("syntaxErrors");
+            if (errorsArr != null && errorsArr.isArray())
+                for (JsonNode e : errorsArr) errors.add(SyntaxError.fromJson(e));
+
+            return new TreeSitterResult(nodes, edges, errors);
+        }
+
+        public static class SyntaxError {
+            public final int    line;
+            public final String message;
+
+            public SyntaxError(int line, String message) {
+                this.line    = line;
+                this.message = message;
+            }
+
+            public static SyntaxError fromJson(JsonNode n) {
+                String msg = n.path("message").asText();
+                return new SyntaxError(n.path("line").asInt(0), msg.isEmpty() ? "Syntax error" : msg);
+            }
         }
 
         public static class ParsedNode {

@@ -638,13 +638,35 @@ function parseWithTreeSitter(language, filePath, content) {
   }
 }
 
+// ─── Syntax error collection (tree-sitter ERROR / MISSING nodes) ─────────────
+
+/**
+ * Walk the tree-sitter AST and collect every ERROR or MISSING node.
+ * Returns an array of { line, message } objects ready to ship back to Java.
+ * line is 1-based (tree-sitter rows are 0-based).
+ */
+function collectSyntaxErrors(rootNode) {
+  const errors = [];
+  const stack = [rootNode];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node.type === 'ERROR') {
+      errors.push({ line: node.startPosition.row + 1, message: `Syntax error near "${node.text.slice(0, 60).replace(/\n/g, '\\n')}"` });
+    } else if (node.isMissing) {
+      errors.push({ line: node.startPosition.row + 1, message: `Missing token: ${node.type}` });
+    }
+    for (const child of node.children) stack.push(child);
+  }
+  return errors;
+}
+
 // ─── Python Tree-sitter (Tier 1 implementation, unchanged) ───────────────────
 
 function parsePythonTree(tree, filePath, content) {
   const nodes = [], edges = [];
   const lines = content.split('\n');
   collectPythonFunctions(tree.rootNode, filePath, null, nodes, edges, lines);
-  return { nodes, edges };
+  return { nodes, edges, syntaxErrors: collectSyntaxErrors(tree.rootNode) };
 }
 
 function collectPythonFunctions(node, filePath, currentClass, nodes, edges, lines) {
@@ -778,7 +800,7 @@ function parseGoTree(tree, filePath, content) {
                    classContext: receiverType, isAsync: false, decorators: [] });
     }
   }
-  return { nodes, edges };
+  return { nodes, edges, syntaxErrors: collectSyntaxErrors(tree.rootNode) };
 }
 
 function extractGoReceiver(paramList) {
@@ -839,7 +861,7 @@ function extractGoCalls(bodyNode, fromId, filePath, receiverType, packageName) {
 function parseRubyTree(tree, filePath, content) {
   const nodes = [], edges = [];
   collectRubyMethods(tree.rootNode, filePath, null, nodes, edges);
-  return { nodes, edges };
+  return { nodes, edges, syntaxErrors: collectSyntaxErrors(tree.rootNode) };
 }
 
 function collectRubyMethods(node, filePath, currentClass, nodes, edges) {
@@ -912,7 +934,7 @@ function extractRubyCalls(bodyNode, fromId, filePath, currentClass) {
 function parseJSTree(tree, filePath, content) {
   const nodes = [], edges = [];
   collectJSFunctions(tree.rootNode, filePath, null, nodes, edges);
-  return { nodes, edges };
+  return { nodes, edges, syntaxErrors: collectSyntaxErrors(tree.rootNode) };
 }
 
 function collectJSFunctions(node, filePath, currentClass, nodes, edges) {

@@ -299,11 +299,11 @@ public class ASTParserService {
                                 List<CompilationError> compilationErrors) {
         switch (language) {
             case "java"       -> parseJavaPass2(filePath, content, solverParser, symbolIndex, nodes, edges, compilationErrors);
-            case "typescript" -> parseWithToolBridge(filePath, content, "typescript", symbolIndex, nodes, edges);
-            case "python"     -> parseWithToolBridge(filePath, content, "python", symbolIndex, nodes, edges);
-            case "go"         -> parseWithToolBridge(filePath, content, "go", symbolIndex, nodes, edges);
+            case "typescript" -> parseWithToolBridge(filePath, content, "typescript", symbolIndex, nodes, edges, compilationErrors);
+            case "python"     -> parseWithToolBridge(filePath, content, "python", symbolIndex, nodes, edges, compilationErrors);
+            case "go"         -> parseWithToolBridge(filePath, content, "go", symbolIndex, nodes, edges, compilationErrors);
             case "javascript",
-                 "ruby"       -> parseViaTreeSitter(filePath, content, language, symbolIndex, nodes, edges);
+                 "ruby"       -> parseViaTreeSitter(filePath, content, language, symbolIndex, nodes, edges, compilationErrors);
             default           -> parseGenericFile(filePath, content, nodes);
         }
     }
@@ -387,7 +387,8 @@ public class ASTParserService {
 
     private void parseWithToolBridge(String filePath, String content, String language,
                                      CrossFileSymbolIndex symbolIndex,
-                                     Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+                                     Map<String, FlowNode> nodes, List<FlowEdge> edges,
+                                     List<CompilationError> compilationErrors) {
         // Attempt Tier 2 bridge first
         if (langToolBridge.isAvailable(language)) {
             LanguageToolBridgeService.ParseResult result =
@@ -399,14 +400,15 @@ public class ASTParserService {
         }
         // Fallback: Tree-sitter with symbol index edge resolution
         logger.debug("Falling back to Tree-sitter for {} ({})", filePath, language);
-        parseViaTreeSitter(filePath, content, language, symbolIndex, nodes, edges);
+        parseViaTreeSitter(filePath, content, language, symbolIndex, nodes, edges, compilationErrors);
     }
 
     // ── Tree-sitter with post-hoc edge resolution ─────────────────────────────
 
     private void parseViaTreeSitter(String filePath, String content, String language,
                                     CrossFileSymbolIndex symbolIndex,
-                                    Map<String, FlowNode> nodes, List<FlowEdge> edges) {
+                                    Map<String, FlowNode> nodes, List<FlowEdge> edges,
+                                    List<CompilationError> compilationErrors) {
         if (!treeSitterBridge.isAvailable()) {
             logger.warn("Tree-sitter bridge unavailable — skipping {} ({})", filePath, language);
             return;
@@ -415,6 +417,14 @@ public class ASTParserService {
             TreeSitterBridgeService.TreeSitterResult result =
                     treeSitterBridge.parse(language, filePath, content);
             mapBridgeResultToGraph(result.nodes, result.edges, filePath, symbolIndex, nodes, edges);
+            for (TreeSitterBridgeService.TreeSitterResult.SyntaxError se : result.syntaxErrors) {
+                compilationErrors.add(CompilationError.builder()
+                        .file(filePath).language(language).line(se.line)
+                        .message(se.message).severity("ERROR").build());
+            }
+            if (!result.syntaxErrors.isEmpty()) {
+                logger.warn("[ast] {} syntax error(s) in {} ({})", result.syntaxErrors.size(), filePath, language);
+            }
         } catch (Exception e) {
             logger.warn("Tree-sitter parse error for {} ({}): {}", filePath, language, e.getMessage());
         }
