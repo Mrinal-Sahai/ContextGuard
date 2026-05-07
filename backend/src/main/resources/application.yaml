@@ -26,20 +26,51 @@ server:
 github:
   api:
     base-url: https://api.github.com
-    # For public repos, no token needed
-    # For private repos, set GITHUB_TOKEN environment variable
+    token: ${GITHUB_TOKEN:}
+  oauth:
+    client-id: ${GITHUB_OAUTH_CLIENT_ID:}
+    client-secret: ${GITHUB_OAUTH_CLIENT_SECRET:}
+    callback-url: ${GITHUB_OAUTH_CALLBACK_URL:http://localhost:8080/api/auth/github/callback}
+
+jwt:
+  secret: ${JWT_SECRET:contextguard-dev-secret-key-change-in-production-min-32chars}
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+app:
+  frontend-url: ${FRONTEND_URL:http://localhost:3000}
 
 ai:
   gemini:
     api-key: ${GEMINI_API_KEY:}
-    model: gemini-1.5-pro
+    model: gemini-2.0-flash
     temperature: 0.15
-    max-tokens: 6000
+    max-tokens: 12000
 
   openai:
-    model: gpt-4o-mini
+    api-key: ${OPENAI_API_KEY:}
+    model: gpt-4.1
     temperature: 0.1
-    max-tokens: 6000
+    max-tokens: 12000
+
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: ${ANTHROPIC_MODEL:claude-sonnet-4-6}
+    max-tokens: ${ANTHROPIC_MAX_TOKENS:6000}
+
+semgrep:
+  enabled: ${SEMGREP_ENABLED:true}
+  timeout-seconds: ${SEMGREP_TIMEOUT_SECONDS:60}
+
+# ── Bridge configuration ──────────────────────────────────────────────────────
+bridge:
+  tree-sitter:
+    url: ${BRIDGE_TREE_SITTER_URL:http://localhost:3000}
+
+treesitter:
+  bridge:
+    timeout-ms: 10000
+  batch:
+    timeout-ms: 60000
 
 # ── Bridge configuration ──────────────────────────────────────────────────────
 # Docker: docker-compose.yml overrides bridge.*.url with container-network URLs.

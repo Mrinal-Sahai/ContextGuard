@@ -283,19 +283,34 @@ public class ComplexityEstimator {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // COMMENT STRIPPING
+    // COMMENT & STRING STRIPPING
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Strip inline and block comments from a single line.
-     * Does NOT handle multi-line block comments (diff lines are per-line already).
+     * Strip string literals, then inline/block comments from a single diff line.
+     *
+     * ORDER: string literals FIRST, then comments. Stripping strings prevents
+     * keywords inside string values (e.g. "if this fails then retry while reconnecting")
+     * from inflating the CC score.
+     *
+     * Example (before fix):
+     *   String msg = "if this fails then retry while reconnecting";
+     *   → old behaviour: if=1, while=1 → +2 false decision points
+     *   → new behaviour: string content blanked → 0 decision points (correct)
+     *
+     * Multi-line block comments are NOT handled here because diff lines are
+     * already per-line — the opening slash-star on line N is already split from
+     * the star-slash on line M.
      */
     private String stripComments(String line) {
-        // Strip single-line comment
+        // Step 1: blank string literal contents to prevent keyword false-positives
+        line = stripStringLiterals(line);
+
+        // Step 2: strip single-line comment
         int slIdx = line.indexOf("//");
         if (slIdx >= 0) line = line.substring(0, slIdx);
 
-        // Strip inline block comment  /* ... */ on same line
+        // Step 3: strip same-line block comment  /* ... */
         int bsIdx = line.indexOf("/*");
         int beIdx = line.indexOf("*/");
         if (bsIdx >= 0 && beIdx > bsIdx) {
@@ -303,5 +318,41 @@ public class ComplexityEstimator {
         }
 
         return line;
+    }
+
+    /**
+     * Replace the contents of string literals with spaces, preserving column positions
+     * so that brace-depth tracking on the same line remains accurate.
+     *
+     * Handles:
+     *   - Double-quoted strings  "hello if world"  →  "               "
+     *   - Single-quoted chars    'x'               →  ' '
+     *   - Escaped quotes         "she \"said\" if" →  "               "
+     *
+     * Spaces are used instead of removal so that a '{' at column 50 inside a string
+     * does not shift brace depth counting for the rest of the line.
+     */
+    private String stripStringLiterals(String line) {
+        StringBuilder result = new StringBuilder(line.length());
+        boolean inDouble = false;
+        boolean inSingle = false;
+
+        for (int i = 0; i < line.length(); i++) {
+            char c    = line.charAt(i);
+            char prev = (i > 0) ? line.charAt(i - 1) : 0;
+
+            if (c == '"' && !inSingle && prev != '\\') {
+                inDouble = !inDouble;
+                result.append(c);          // keep the quote delimiter itself
+            } else if (c == '\'' && !inDouble && prev != '\\') {
+                inSingle = !inSingle;
+                result.append(c);          // keep the quote delimiter itself
+            } else if (inDouble || inSingle) {
+                result.append(' ');        // blank out string content
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
     }
 }

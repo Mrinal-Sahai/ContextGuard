@@ -13,6 +13,8 @@ export const ASTMetricsPanel: React.FC<{
     removedPublicMethods,
     addedPublicMethods,
     hotspotMethodIds,
+    astAccurate,
+    semgrepFindingCount,
   } = metrics;
 
   const removedCount = removedPublicMethods ?? 0;
@@ -55,7 +57,7 @@ export const ASTMetricsPanel: React.FC<{
   return (
     <div className={`${cardBg} border rounded-xl p-6`}>
       {/* Header */}
-      <div className="flex items-center gap-2 mb-5">
+      <div className="flex items-center gap-2 mb-5 flex-wrap">
         <Cpu className={`w-5 h-5 ${isDarkMode ? 'text-cyan-400' : 'text-cyan-600'}`} />
         <h3 className={`text-sm font-semibold ${textSecondary} uppercase tracking-wider`}>
           AST-Derived Metrics
@@ -64,6 +66,22 @@ export const ASTMetricsPanel: React.FC<{
           content="Computed from Java AST parsing (JavaParser), not diff-line heuristics. Available after FlowExtractorService completes and feeds back into risk and difficulty scores."
           isDarkMode={isDarkMode}
         />
+        {/* AST accuracy badge */}
+        {astAccurate === true ? (
+          <span className="ml-auto px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            AST-backed ✓
+          </span>
+        ) : (
+          <span className="ml-auto px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+            Heuristic estimate
+          </span>
+        )}
+        {/* Semgrep finding badge */}
+        {semgrepFindingCount != null && semgrepFindingCount > 0 && (
+          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+            {semgrepFindingCount} Semgrep {semgrepFindingCount === 1 ? 'finding' : 'findings'}
+          </span>
+        )}
       </div>
 
       {/* 4-cell grid */}
@@ -126,7 +144,7 @@ export const ASTMetricsPanel: React.FC<{
           <div className={`text-xs ${textSecondary} mb-2 flex items-center gap-0.5`}>
             Public API Δ
             <InfoTooltip
-              content="Removed public (non-void) methods = breaking changes — all callers must be updated or fail at runtime. Added = new API surface requiring documentation. API surface changes are a top-3 predictor of post-merge defects."
+              content="Removed explicitly-public methods = breaking changes — all callers must be updated or fail at runtime. Added = new API surface requiring documentation. API surface changes are a top-3 predictor of post-merge defects. Java: exact (from access modifier). TypeScript/Python/Go: heuristic (private if name starts with _ or #)."
               paper="Kim et al. (2008), IEEE TSE"
               isDarkMode={isDarkMode}
             />

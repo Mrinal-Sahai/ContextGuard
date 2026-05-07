@@ -23,6 +23,8 @@ public class RiskBreakdown {
     private double rawComplexityDelta;
     private double rawCriticalDensity;
     private double rawTestCoverageGap;
+    private double rawSastFindings;
+    private double sastFindingsContribution;
     private List<SignalInterpretation> signals;
 
 

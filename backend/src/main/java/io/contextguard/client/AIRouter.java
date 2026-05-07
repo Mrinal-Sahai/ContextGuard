@@ -21,8 +21,9 @@ public class AIRouter {
 
     public AIClient getClient(AIProvider provider) {
         return switch (provider) {
-            case GEMINI -> clients.get("GeminiApiClient");
-            case OPENAI -> clients.get("OpenAIApiClient");
+            case GEMINI     -> clients.get("GeminiApiClient");
+            case OPENAI     -> clients.get("OpenAIApiClient");
+            case ANTHROPIC  -> clients.get("AnthropicAIClient");
         };
     }
 }

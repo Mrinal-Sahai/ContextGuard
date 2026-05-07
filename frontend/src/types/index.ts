@@ -18,6 +18,14 @@ export interface PRAnalysisResponse {
   error: string | null;
 }
 
+export interface SemgrepFinding {
+  ruleId: string;
+  severity: 'ERROR' | 'WARNING' | 'INFO';
+  message: string;
+  filePath: string;
+  line: number;
+}
+
 export interface PRIntelligenceResponse {
   analysisId: string;
   metadata: PRMetadata;
@@ -30,6 +38,11 @@ export interface PRIntelligenceResponse {
   diagramVerificationNotes?: string;
   diagramMetrics?: DiagramMetrics;
   analyzedAt: string;
+  mergeConflictStatus?: MergeConflictStatus;
+  compilationStatus?: CompilationStatus;
+  sastFindings?: SemgrepFinding[];
+  /** Non-null when AI services (diagram + narrative) were skipped. Explains the reason. */
+  aiSkipReason?: string;
 }
 
 export interface DiagramMetrics {
@@ -54,6 +67,8 @@ export interface PRMetadata {
   baseRepo: string;
   prUrl: string;
   body: string;
+  mergeable?: boolean | null;
+  mergeableState?: string;
 }
 
 export interface DiffMetrics {
@@ -71,6 +86,10 @@ export interface DiffMetrics {
   hotspotMethodIds?: string[];
   removedPublicMethods?: number;
   addedPublicMethods?: number;
+  astAccurate?: boolean;
+  semgrepFindingCount?: number;
+  /** Subset of semgrepFindingCount with Semgrep severity=ERROR (high-confidence security issues). */
+  highSeveritySastFindingCount?: number;
 }
 
 export interface FileChangeSummary {
@@ -116,12 +135,28 @@ export interface RiskBreakdown {
   highRiskDensityContribution: number;
   complexityContribution?: number;
   testCoverageGapContribution?: number;
+  sastFindingsContribution?: number;
   // raw values for tooltip display only — excluded from chart bars
   rawAverageRisk?: number;
   rawPeakRisk?: number;
   rawComplexityDelta?: number;
   rawCriticalDensity?: number;
   rawTestCoverageGap?: number;
+  rawSastFindings?: number;
+  signals?: SignalInterpretation[];
+}
+
+export interface SignalInterpretation {
+  key: string;
+  label: string;
+  rawValue: number;
+  unit: string;
+  signalVerdict: string;
+  whatItMeans: string;
+  evidence: string;
+  weight: number;
+  normalizedSignal: number;
+  weightedContribution: number;
 }
 
 export interface DifficultyAssessment {
@@ -174,3 +209,30 @@ export interface BlastRadiusAssessment {
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type DifficultyLevel = 'TRIVIAL' | 'EASY' | 'MODERATE' | 'HARD' | 'VERY_HARD';
+
+export interface MergeConflictStatus {
+  /** null = GitHub hasn't computed yet */
+  mergeable: boolean | null;
+  /** clean | dirty | unstable | blocked | behind | draft | unknown */
+  mergeableState: string;
+  hasConflicts: boolean;
+  conflictFileCount: number;
+  /** Files changed in both the PR and the base branch since fork */
+  conflictingFiles: string[];
+}
+
+export interface CompilationError {
+  file: string;
+  language: string;
+  line: number;
+  message: string;
+  severity: 'ERROR' | 'WARNING';
+}
+
+export interface CompilationStatus {
+  hasErrors: boolean;
+  errorCount: number;
+  warningCount: number;
+  parsedLanguages: string[];
+  errors: CompilationError[];
+}

@@ -22,4 +22,8 @@ public class PRMetadata {
     private String baseRepo;
     private String prUrl;
     private String body;
+    /** null = GitHub hasn't computed yet; true = no conflicts; false = conflicts exist */
+    private Boolean mergeable;
+    /** clean | dirty | unstable | blocked | behind | draft | unknown */
+    private String mergeableState;
 }

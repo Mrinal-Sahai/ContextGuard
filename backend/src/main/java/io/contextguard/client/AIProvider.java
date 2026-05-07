@@ -4,7 +4,14 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 
 public enum AIProvider {
     GEMINI,
-    OPENAI;
+    OPENAI,
+    /**
+     * Anthropic Claude via the Anthropic Messages API.
+     * Supports the MCP Connector (beta) — allows Claude to call the GitHub MCP server
+     * to fetch code scanning alerts, review status, and CI results during generation.
+     * Requires ANTHROPIC_API_KEY env var.
+     */
+    ANTHROPIC;
 
 
     @JsonCreator
@@ -17,7 +24,7 @@ public enum AIProvider {
             return AIProvider.valueOf(value.toUpperCase());
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(
-                    "Invalid aiProvider. Allowed values: GEMINI, OPENAI", e
+                    "Invalid aiProvider. Allowed values: GEMINI, OPENAI, ANTHROPIC", e
             );
         }
     }

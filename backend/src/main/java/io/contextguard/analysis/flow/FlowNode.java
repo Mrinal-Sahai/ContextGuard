@@ -27,6 +27,20 @@ public class FlowNode {
 
     private Set<String> annotations; // @Override, @Transactional, etc.
     private String returnType;       // For methods
+
+    /**
+     * True when the method is explicitly public (or effectively public for interface methods).
+     *
+     * Java:       set from JavaParser's method.isPublic() — accurate.
+     * TS/Py/Go:   set heuristically — private only when name starts with '_' or '#'.
+     *             Best-effort; improves on the old "non-void return type" proxy.
+     *
+     * Default is true so that PRs parsed before this field existed still count
+     * non-void methods the old way (conservative: over-counts rather than under-counts).
+     */
+    @Builder.Default
+    private boolean isPublic = true;
+
     private int cyclomaticComplexity; // Computed from AST
 
     private int inDegree;           // Number of incoming calls

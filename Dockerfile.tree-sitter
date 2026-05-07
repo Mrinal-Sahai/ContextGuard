@@ -1,0 +1,97 @@
+# syntax=docker/dockerfile:1
+# ─────────────────────────────────────────────────────────────────────────────
+# ContextGuard — Tree-sitter Bridge Container
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Runs tree-sitter-http-server.js on port 3000.
+#
+# Tier 2 capabilities bundled in this image:
+#   - Tree-sitter grammars: Python, Go, Ruby, JS, TS
+#   - TypeScript Compiler API (tsc) for type-resolved TS edges
+#   - Pyright for Python type resolution
+#   - go-types-bridge binary (go/types + go/ssa) for Go call edges
+#
+# Image size estimate: ~350MB  (Node 20 slim + grammars + go binary)
+# ─────────────────────────────────────────────────────────────────────────────
+
+ARG NODE_VERSION=20
+
+# ── Stage 1: Go bridge binary ─────────────────────────────────────────────────
+FROM golang:1.22-alpine AS go-builder
+
+WORKDIR /build
+
+COPY tree-sitter-bridge/go-types-bridge/go.mod \
+     tree-sitter-bridge/go-types-bridge/go.sum* \
+     ./
+
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+COPY tree-sitter-bridge/go-types-bridge/ ./
+
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o go-types-bridge .
+
+
+# ── Stage 2: Node modules (compiles native tree-sitter .node files) ───────────
+FROM --platform=linux/amd64 node:${NODE_VERSION}-bullseye AS node-builder
+
+WORKDIR /bridge
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 git libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHON=/usr/bin/python3
+
+COPY tree-sitter-bridge/package.json \
+     tree-sitter-bridge/package-lock.json* \
+     ./
+
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci \
+    && node -e " \
+        require('tree-sitter'); \
+        require('tree-sitter-python'); \
+        require('tree-sitter-go'); \
+        require('tree-sitter-javascript'); \
+        require('tree-sitter-typescript'); \
+        require('tree-sitter-ruby'); \
+        console.log('All grammars verified'); \
+    "
+
+
+# ── Stage 3: Runtime image ────────────────────────────────────────────────────
+FROM --platform=linux/amd64 node:${NODE_VERSION}-bullseye-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/tree-sitter-bridge
+
+# Bridge scripts
+COPY tree-sitter-bridge/tree-sitter-bridge.js     ./tree-sitter-bridge.js
+COPY tree-sitter-bridge/tree-sitter-http-server.js ./tree-sitter-http-server.js
+COPY tree-sitter-bridge/index-batch-handler.js     ./index-batch-handler.js
+
+# Pre-compiled node_modules (native .node files match this Node ABI)
+COPY --from=node-builder /bridge/node_modules ./node_modules
+
+# Go binary
+COPY --from=go-builder /build/go-types-bridge ./go-types-bridge
+RUN chmod +x ./go-types-bridge
+
+ENV GO_TYPES_BRIDGE_PATH=/app/tree-sitter-bridge/go-types-bridge
+ENV PORT=3000
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+CMD ["node", "tree-sitter-http-server.js"]

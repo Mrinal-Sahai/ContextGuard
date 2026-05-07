@@ -1,6 +1,8 @@
-version: '3.8'
-
 services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL
+  # ─────────────────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: contextguard-postgres
@@ -19,97 +21,136 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
-  redis:
-    image: redis:7-alpine
-    container_name: contextguard-redis
-    ports:
-      - "6379:6379"
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Tree-sitter Bridge — Node.js HTTP server (port 3000)
+  #
+  # Contains:
+  #   - Tree-sitter grammars (Python, Go, Ruby, JS, TS)
+  #   - TypeScript Compiler API (tsc) for type-resolved TS edges
+  #   - Pyright for Python type resolution
+  #   - go-types-bridge binary for Go call edges
+  #
+  # Image size: ~350MB
+  # ─────────────────────────────────────────────────────────────────────────────
+  tree-sitter-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.tree-sitter
+    container_name: contextguard-tree-sitter
     networks:
       - contextguard-net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+        reservations:
+          memory: 256m
 
-  minio:
-    image: minio/minio:latest
-    container_name: contextguard-minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio-data:/data
-    networks:
-      - contextguard-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  mock-slack:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ContextGuard — Spring Boot Application
+  #
+  # Contains ONLY the Spring Boot jar + JRE 17.
+  # All AST analysis is delegated to the bridge containers via HTTP.
+  #
+  # Memory budget:
+  #   JVM heap (75% of 1.5GB): ~1.1GB
+  #   OS + overhead:           ~300MB
+  #   Total:                   ~1.5GB
+  # ─────────────────────────────────────────────────────────────────────────────
+  contextguard:
     build:
-      context: ./mock-slack
+      context: .
       dockerfile: Dockerfile
-    container_name: contextguard-mock-slack
-    ports:
-      - "3000:3000"
-    networks:
-      - contextguard-net
-    environment:
-      PORT: 3000
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: contextguard-backend
+    container_name: contextguard-app
     ports:
       - "8080:8080"
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: contextguard
-      POSTGRES_USER: cguser
-      POSTGRES_PASSWORD: cgpass
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: contextguard-diffs
-      GITHUB_WEBHOOK_SECRET: dev-secret-github
-      BEANSTALK_WEBHOOK_SECRET: dev-secret-beanstalk
-      LLM_PROVIDER: stub
-      SLACK_WEBHOOK_URL: http://mock-slack:3000/webhook
-    volumes:
-      - ~/.m2:/root/.m2       # ✅ Cache Maven dependencies
+      # ── Database ──────────────────────────────────────────────────────────────
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/contextguard
+      SPRING_DATASOURCE_USERNAME: cguser
+      SPRING_DATASOURCE_PASSWORD: cgpass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+
+      # ── Spring profile ────────────────────────────────────────────────────────
+      SPRING_PROFILES_ACTIVE: prod
+
+      # ── Bridge URLs (container-network names resolve automatically) ───────────
+      BRIDGE_TREE_SITTER_URL: http://tree-sitter-bridge:3000
+
+      # ── Bridge timeouts ───────────────────────────────────────────────────────
+      TREESITTER_BRIDGE_TIMEOUT_MS: 10000
+      TREESITTER_BATCH_TIMEOUT_MS: 60000
+
+      # ── LLM provider (stub = no LLM calls, safe default) ─────────────────────
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+
+      # ── Secrets (from .env — never hardcode) ─────────────────────────────────
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:-http://localhost:8080/api/auth/github/callback}
+      JWT_SECRET: ${JWT_SECRET:-contextguard-change-this-in-production-min-32chars}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
+      tree-sitter-bridge:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      mock-slack:
-        condition: service_started
+
     networks:
       - contextguard-net
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
+      start_period: 60s
       retries: 3
+
+    restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g    # JRE only — bridges are in separate containers
+          cpus: "2.0"
+        reservations:
+          memory: 512m
+          cpus: "0.5"
+
 
 volumes:
   postgres-data:
-  minio-data:
 
 networks:
   contextguard-net:

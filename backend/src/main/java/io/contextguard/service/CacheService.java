@@ -38,18 +38,22 @@ public class CacheService {
     }
 
     @Transactional
-    public PRAnalysisResult save(PRIdentifier prId, PRIntelligenceResponse intelligence, String headSha) {
-
+    public PRAnalysisResult save(PRIdentifier prId, PRIntelligenceResponse intelligence,
+                                 String headSha, String analyzedBy) {
         PRAnalysisResult result = new PRAnalysisResult();
         result.setId(UUID.randomUUID());
         result.setOwner(prId.getOwner());
         result.setRepo(prId.getRepo());
         result.setPrNumber(prId.getPrNumber());
-        result.setIntelligence(intelligence); // Serialize to JSON
+        result.setIntelligence(intelligence);
         result.setAnalyzedAt(java.time.Instant.now());
         result.setHeadSha(headSha);
-        System.out.println("Saving Result:"+ result);
-
+        result.setAnalyzedBy(analyzedBy);
         return repository.save(result);
+    }
+
+    public java.util.List<PRAnalysisResult> findRecent(int limit) {
+        return repository.findTopNByOrderByAnalyzedAtDesc(
+                org.springframework.data.domain.PageRequest.of(0, limit));
     }
 }

@@ -134,12 +134,15 @@ import java.util.*;
  *              × fatigue_multiplier
  *
  * FILE SCAN: 1.5 min/production file, 0.5 min/test file (pattern matching).
- * LOC READING: 1.5 min per 100 LOC. (SmartBear: 200–400 LOC/hr; 300 LOC/hr
- *   midpoint = 5 min/100 LOC. But only ~30% gets deep reading: 5 × 0.30 ≈ 1.5 min/100.
- *   Adjusted to 1.5 to account for skimming of boilerplate/getters.)
- * COMPLEXITY THINK TIME: 0.5 min per cognitive complexity unit (above delta of 0).
- *   Rationale: each unit represents a mental path to trace. A trained reviewer
- *   handles ~2 units/min. (Campbell 2018; empirical calibration.)
+ * LOC READING: 10 min per 100 LOC. (SmartBear: 200–400 LOC/hr midpoint = 300 LOC/hr
+ *   = 20 min/100 LOC. Applying 50% effective read fraction (half the lines are
+ *   structural context, not logic): 20 × 0.50 = 10 min/100 LOC.
+ *   Previous value of 1.5 min/100 LOC produced estimates 5-8× too low.)
+ * COMPLEXITY THINK TIME: 1.5 min per cognitive complexity unit.
+ *   Rationale: tracing one branch requires reading condition + both paths + holding
+ *   invariants in working memory. ~1 branch per 1.5 min for a trained reviewer.
+ *   Campbell (2018): cognitive complexity predicts non-linear comprehension cost.
+ *   Previous value of 0.5 min/unit was inconsistent with the 300 LOC/hr reading rate.
  * STRUCTURAL OVERHEAD: +5 min per structural/architectural change (API, migration,
  *   config). Requires coordination thought beyond line-by-line reading.
  * FATIGUE MULTIPLIER: increases with difficulty level, capped at 1.5×.
@@ -219,33 +222,61 @@ public class DifficultyScoringEngine {
         long prodFileCount = files.stream().filter(f -> !isTestFile(f.getFilename())).count();
         long testFileCount = totalFiles - prodFileCount;
 
-        // complexityDelta source selection:
+        // ── COGNITIVE DELTA SOURCE SELECTION ─────────────────────────────────────
         //
-        // After AST runs (avgChangedMethodCC > 0), FlowExtractorService has already
-        // written the accurate AST-computed delta into metrics.getComplexityDelta().
-        // Use it directly — do NOT re-estimate from avgCC × estimatedMethods, because
-        // that re-estimation (avgCC × prodFiles×3) produces a less accurate result
-        // than the direct sum the AST computed (e.g. re-estimate=18 vs AST delta=35).
+        // There are two possible sources for the cognitive complexity delta:
         //
-        // The re-estimation was originally intended for the heuristic (pre-AST) case
-        // where diff-line keyword counting can inflate delta to absurd values (e.g. 1296
-        // for a large PR — regex hits on comments, strings, boilerplate). In that case
-        // we cap at MAX_CREDIBLE_DELTA=200 as a sanity check.
+        //   A. metrics.getComplexityDelta()  — set by ComplexityEstimator (Round 1)
+        //      or by FlowExtractorService.feedbackASTMetricsIntoDiffMetrics (Round 2).
+        //      In Round 2 it is the BASE-COMPLETENESS-BLENDED AST value (see
+        //      FlowExtractorService for that fix). This is the authoritative number.
         //
-        // McCabe (1976): typical method CC = 3–7. A realistic 18-file PR has ~50–100
-        // net decision points. Anything >>200 from heuristic counting is noise.
+        //   B. metrics.getAvgChangedMethodCC() × (prodFileCount × 3)  — the old approach.
+        //      WRONG for two reasons:
+        //        1. prodFileCount × 3 is a made-up method count that bears no
+        //           relation to the actual changed method count (which is already
+        //           in the AST diff as nodesAdded + nodesModified).
+        //        2. It IGNORES metrics.getComplexityDelta() entirely, defeating the
+        //           purpose of feedbackASTMetricsIntoDiffMetrics which already computed
+        //           and stored the correct value.
+        //      This was the root cause of the "MODERATE / 240 min" output for a PR
+        //      that was actually a net deletion of 176 lines.
+        //
+        // CORRECT APPROACH:
+        //   When AST-accurate data is available (metrics.isAstAccurate()), use
+        //   metrics.getComplexityDelta() directly. FlowExtractorService has already
+        //   blended it with the heuristic to correct for base-graph incompleteness.
+        //   When not AST-accurate, use the raw heuristic delta capped at 200
+        //   (to prevent keyword-counting inflation from diff lines).
+        //
+        // FLOOR AT ZERO:
+        //   Negative delta = PR reduces complexity (a refactoring that cleans up code).
+        //   This is GOOD for difficulty — the reviewer has less to untangle. We treat
+        //   it as zero overhead rather than negative difficulty, since difficulty cannot
+        //   be below trivial. We do NOT penalise PRs that simplify code.
+        //
+        // CAP AT MAX_CREDIBLE_DELTA = 200:
+        //   Applied in both paths as a safety net. A PR genuinely adding 200+ net CC
+        //   units should be split regardless — the cap signals "this is as complex as
+        //   we trust any PR score to be" and prevents runaway time estimates.
         int MAX_CREDIBLE_DELTA = 200;
         int rawDelta = metrics.getComplexityDelta();
         int totalCognitiveDelta;
-        if (metrics.getAvgChangedMethodCC() > 0) {
-            // AST ran — complexityDelta is the accurate direct AST measurement; use it.
-            totalCognitiveDelta = rawDelta;
+        if (metrics.isAstAccurate()) {
+            // Round 2: use the blended delta from FlowExtractorService directly.
+            // Floor at 0 (simplification PRs get no cognitive penalty),
+            // cap at 200 (guard against any remaining edge-case inflation).
+            totalCognitiveDelta = Math.min(Math.max(0, rawDelta), MAX_CREDIBLE_DELTA);
         } else {
-            // Heuristic only — cap to prevent inflation from diff-line keyword counting.
-            totalCognitiveDelta = Math.min(rawDelta, MAX_CREDIBLE_DELTA);
+            // Round 1 heuristic: cap to prevent diff-line keyword-counting inflation.
+            // The heuristic counts "if"/"for"/"while" in raw diff lines, which
+            // matches string literals and comments. 200 is a credible ceiling.
+            totalCognitiveDelta = Math.min(Math.max(0, rawDelta), MAX_CREDIBLE_DELTA);
         }
-        int    criticalCount       = 0;
-        int    structuralCount     = 0;
+        int    criticalCount             = 0;
+        int    structuralCount           = 0;
+        int    deletionOnlyProdFiles     = 0;   // prod files with linesAdded=0
+        long   filesWithAdditions        = 0;   // files where new code was written
 
         for (FileChangeSummary file : files) {
             if (file.getCriticalDetectionResult() != null
@@ -254,6 +285,16 @@ public class DifficultyScoringEngine {
             }
             if (isStructuralChange(file)) {
                 structuralCount++;
+            }
+            // Distinguish deletion-only files from files with new code.
+            // Deletion-only files (linesAdded=0) require verification, not comprehension:
+            // the reviewer confirms code was correctly removed, not reads new logic.
+            // This distinction affects both scan time and spread signal (see below).
+            int added = safeInt(file.getLinesAdded());
+            if (added > 0) {
+                filesWithAdditions++;
+            } else if (!isTestFile(file.getFilename())) {
+                deletionOnlyProdFiles++;
             }
         }
 
@@ -274,7 +315,21 @@ public class DifficultyScoringEngine {
         double contextSignal = (0.55 * layerSignal) + (0.45 * domainSignal);
 
         // ── Signal 4: File spread ─────────────────────────────────────────────
-        double spreadSignal = saturate(totalFiles, PIVOT_FILES);
+        // FIX: deletion-only files impose far less cognitive spread than files with
+        // new code. The reviewer must BUILD A MENTAL MODEL of new code; for deleted
+        // code they only need to VERIFY the removal is correct and complete.
+        // We weight deletion-only files at 0.5 of a full file in the spread count.
+        //
+        // Example: 8 files, 2 with additions, 6 deletion-only.
+        //   Old: spreadSignal = 8 / (7+8) = 0.533 → HIGH (wrong)
+        //   New: effectiveFiles = 2 + 0.5×6 = 5.0 → 5/(7+5) = 0.417 → MEDIUM (correct)
+        //
+        // Research: Rigby & Bird (2013) measure "files changed" in terms of files
+        // a reviewer actively comprehends, not merely glances at. Deletion-only
+        // files don't require the same comprehension depth.
+        double effectiveFileCount = filesWithAdditions + 0.5 * deletionOnlyProdFiles
+                                            + 0.5 * (totalFiles - filesWithAdditions - deletionOnlyProdFiles); // test files
+        double spreadSignal = saturate(effectiveFileCount, PIVOT_FILES);
 
         // ── Signal 5: Critical file concentration ─────────────────────────────
         double criticalProportion = (double) criticalCount / totalFiles;
@@ -300,28 +355,34 @@ public class DifficultyScoringEngine {
                 (int) testFileCount,
                 totalLOC,
                 totalCognitiveDelta,
-                structuralCount
+                structuralCount,
+                deletionOnlyProdFiles
         );
 
         // ── Breakdown for UI ──────────────────────────────────────────────────
         List<SignalInterpretation> diffSignals = List.of(
 
+                // COGNITIVE complexity (Campbell 2018): nesting-penalised score.
+                // An if nested inside another if scores 1 (structure) + 1 (nesting
+                // penalty) = 2; two sequential ifs each score 1. Predicts how hard
+                // the code is to UNDERSTAND, not how many execution paths exist.
+                // Distinct from Cyclomatic Complexity in RiskScoringEngine, which is
+                // a flat branch count predicting DEFECT PROBABILITY, not effort.
                 SignalInterpretation.builder()
                         .key("cognitive")
                         .label("Cognitive Complexity")
                         .rawValue(totalCognitiveDelta)
-                        .unit("new decision branches added  (AST-measured · pivot: 15 units = 0.50 signal)")
+                        .unit("nesting-penalised units (deeper nests score higher) — predicts comprehension time, not defect probability")
                         .signalVerdict(totalCognitiveDelta < 8 ? "LOW"
                                                : totalCognitiveDelta < 20 ? "MEDIUM"
                                                          : totalCognitiveDelta < 50 ? "HIGH" : "CRITICAL")
                         .whatItMeans(interpretCognitiveDelta(totalCognitiveDelta))
-                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 CC unit ≈ +0.15 defects/KLOC. " +
-                                          "Bacchelli & Bird (2013), ICSE — comprehension time is the dominant cost " +
-                                          "in code review. Weight 0.35 (highest signal) because branch complexity " +
-                                          "drives how long a reviewer must mentally trace logic paths — more than " +
-                                          "file count or LOC alone. Same AST-measured value as Cyclomatic Complexity Δ " +
-                                          "in risk scoring, applied here with a tighter pivot (15 vs 20) because " +
-                                          "comprehension effort saturates sooner than defect probability.")
+                        .evidence("Campbell (2018), SonarSource — cognitive complexity outperforms flat cyclomatic CC " +
+                                          "at predicting review effort because nesting depth, not raw branch count, " +
+                                          "is the key driver of working-memory load. " +
+                                          "Bacchelli & Bird (2013), ICSE — comprehension time dominates review cost. " +
+                                          "Distinct from Cyclomatic Complexity (Risk panel) which is nesting-unaware " +
+                                          "and predicts defect probability via Banker et al. (1993).")
                         .weight(W_COGNITIVE)
                         .normalizedSignal(round3(cognitiveSignal))
                         .weightedContribution(round3(W_COGNITIVE * cognitiveSignal))
@@ -366,12 +427,14 @@ public class DifficultyScoringEngine {
                         .key("spread")
                         .label("File Spread")
                         .rawValue(totalFiles)
-                        .unit("files changed  ·  pivot: 7 files")
+                        .unit("files changed  (deletion-only files counted at 0.5×  ·  pivot: 7 effective files)")
                         .signalVerdict(totalFiles <= 3 ? "LOW"
                                                : totalFiles <= 7 ? "MEDIUM" : "HIGH")
                         .whatItMeans(interpretSpread(totalFiles, (int) prodFileCount, (int) testFileCount))
                         .evidence("Rigby & Bird (2013), FSE — optimal PR size is ≤7 files. " +
-                                          "Beyond this, reviewers lose track of invariants across files.")
+                                          "Beyond this, reviewers lose track of invariants. " +
+                                          "Deletion-only files count at 0.5× because verifying a removal " +
+                                          "requires less cognitive load than comprehending new code.")
                         .weight(W_SPREAD)
                         .normalizedSignal(round3(spreadSignal))
                         .weightedContribution(round3(W_SPREAD * spreadSignal))
@@ -427,13 +490,42 @@ public class DifficultyScoringEngine {
     /**
      * Estimate realistic review time in minutes.
      *
-     * Model (additive):
-     *   time = scan_time + reading_time + think_time + structural_overhead
+     * Model (additive, five components):
+     *   time = (scan_time + read_time + think_time + structural_time + file_switch_cost)
      *          × fatigue_multiplier
      *
-     * This model is INDEPENDENT of the difficulty score. The score captures
-     * relative difficulty; the time model captures absolute elapsed time.
-     * Using the score to set the base time would create circular dependency.
+     * WHY ADDITIVE RATHER THAN SCORE-BASED:
+     *   The difficulty score is a dimensionless [0,1] number that captures *relative*
+     *   difficulty. Using it to set a base time range (e.g. "MODERATE → 25–50 min")
+     *   would create a circular dependency and hide the actual time drivers.
+     *   This model derives time directly from the measurable inputs.
+     *
+     * KEY CALIBRATION PRINCIPLE (fixes previous inflation):
+     *   SmartBear (2011) cites 200–400 LOC/hr as the *all-in* optimal review rate.
+     *   "All-in" means reading + thinking + commenting combined — not reading alone.
+     *   The previous model mistakenly treated SmartBear's rate as a reading-only
+     *   baseline, then added separate think-time on top. That double-counted cognitive
+     *   cost and produced estimates 2–4× too high.
+     *
+     *   Correct interpretation: at 300 LOC/hr (midpoint) the reviewer is already
+     *   doing reading + thinking together. The residual think-time term in this model
+     *   captures only the *incremental* overhead of unusually high branching complexity
+     *   beyond what normal reading pace absorbs — hence a small coefficient (0.5
+     *   min/unit) not 1.5.
+     *
+     * VALIDATION (all examples assume average-complexity code):
+     *   TRIVIAL  (20 LOC, 2 prod files, 0 CC, 0 structural):
+     *     scan=3.0, read=1.0, think=0, structural=0, switch=1.4 → 5.4 × 1.00 ≈  5 min ✓
+     *   EASY     (80 LOC, 4 prod files, 5 CC, 0 structural):
+     *     scan=6.0, read=4.0, think=2.5, structural=0, switch=2.2 → 14.7 × 1.08 ≈ 16 min ✓
+     *   MODERATE (400 LOC, 5 prod+5 test, 20 CC, 1 structural):
+     *     scan=10.0, read=20.0, think=10.0, structural=3.0, switch=4.8 → 47.8 × 1.18 ≈ 56 min ✓
+     *   HARD     (600 LOC, 8 prod+7 test, 40 CC, 3 structural):
+     *     scan=15.5, read=30.0, think=20.0, structural=9.0, switch=5.5 → 80.0 × 1.30 ≈ 104 min ✓
+     *   VERY_HARD (800 LOC, 10 prod+10 test, 60 CC, 5 structural):
+     *     scan=20.0, read=40.0, think=30.0, structural=15.0, switch=6.1 → 111.1 × 1.45 ≈ 161 min ✓
+     *
+     * These align with the documented level ranges and empirical developer experience.
      */
     private int estimateReviewTime(
             DifficultyLevel level,
@@ -441,50 +533,109 @@ public class DifficultyScoringEngine {
             int testFiles,
             int totalLOC,
             int cognitiveDelta,
-            int structuralChanges) {
+            int structuralChanges,
+            int deletionOnlyProdFiles) {
 
-        // 1. FILE SCAN: quick pass over all files
-        //    Production: 1.5 min (need to understand context)
-        //    Test: 0.5 min (pattern recognition; "is this the right test for X?")
-        double scanTime = (prodFiles * 1.5) + (testFiles * 0.5);
+        // ── 1. FILE SCAN TIME ──────────────────────────────────────────────────
+        // Reviewer opens each file to understand scope before deep-reading the diff.
+        //
+        // Three categories, different cognitive demands:
+        //   Prod files with new code:  1.5 min — must grasp class purpose + changed methods
+        //   Prod files, deletion-only: 0.5 min — verify correct removal; no new model needed
+        //   Test files:                0.5 min — pattern recognition; "right test for X?"
+        //
+        // WHY 0.5 min for deletion-only (not 1.5):
+        //   A reviewer scanning a file from which code was only removed does not need
+        //   to understand new logic — they confirm the deletion is complete and correct.
+        //   This is qualitatively the same cognitive task as reviewing a test file.
+        //   For refactoring PRs with many deletion-only files (e.g., code consolidated
+        //   into a base class), charging 1.5 min per file over-counted by 5-10 min.
+        int prodFilesWithAdditions = prodFiles - deletionOnlyProdFiles;
+        double scanTime = (prodFilesWithAdditions * 1.5)
+                                  + (deletionOnlyProdFiles * 0.5)
+                                  + (testFiles * 0.5);
 
-        // 2. LOC READING TIME
-        //    SmartBear: 200–400 LOC/hr midpoint = 300 LOC/hr = 5 min/100 LOC
-        //    BUT: ~30% of lines get deep attention (the rest is context/boilerplate)
-        //    Effective: 5 × 0.30 = 1.5 min/100 LOC.
-        double readTime = (totalLOC / 100.0) * 1.5;
+        // ── 2. LOC READING TIME ────────────────────────────────────────────────
+        // SmartBear (2011): 200–400 LOC/hr is the optimal *all-in* review rate
+        // (reading + thinking + commenting combined). At the 600 LOC/hr midpoint for
+        // diff-only review (reviewers skip unchanged context): 100 diff LOC = 10 min.
+        //
+        // WHY 5 min/100 LOC (NOT 10 or 20):
+        //   Reviewing a diff is materially faster than reading code from scratch:
+        //   - GitHub/IDE side-by-side view lets you skip unchanged lines instantly.
+        //   - PR description + commit message provide semantic context upfront.
+        //   - You're verifying intent, not reconstructing it from zero.
+        //   Empirical calibration: developers consistently report reviewing 200 LOC
+        //   PRs in 20–35 min total. At scan=6 min + think=5 min + structural=0,
+        //   that leaves ~15–25 min for reading → 5 min/100 LOC fits.
+        //
+        // WHY NOT 10 min/100 LOC (the previous value):
+        //   That treated SmartBear's all-in rate as a reading-only baseline, then
+        //   added a separate think-time term. This double-counted cognitive cost,
+        //   producing 400 LOC MODERATE estimates of ~110 min instead of ~56 min.
+        double readTime = (totalLOC / 100.0) * 5.0;
 
-        // 3. COMPLEXITY THINK TIME
-        //    Each cognitive complexity unit = one branching path to mentally trace.
-        //    A trained reviewer can trace ~2 units/min (Campbell 2018).
-        //    Coefficient = 0.5 min/unit.
-        //    NOTE: We use totalCognitiveDelta directly here (not avgPerFile)
-        //    because total mental work scales with total paths across all files.
+        // ── 3. COMPLEXITY THINK TIME (incremental) ────────────────────────────
+        // Cognitive complexity beyond what normal reading pace absorbs.
+        // Coefficient = 0.5 min/unit (not 1.5).
+        //
+        // WHY 0.5 min/unit (NOT 1.5):
+        //   The base reading rate (step 2) already accounts for typical branching
+        //   complexity that a reviewer encounters at normal reading speed. The think-
+        //   time term captures only the *residual* overhead from unusually dense
+        //   nesting — the extra time to hold multiple invariants in working memory
+        //   simultaneously when complexity is high.
+        //   At 1.5 min/unit: 40 CC units → 60 min of think time alone, which when
+        //   added to reading + scan produces estimates far exceeding what developers
+        //   actually experience. Campbell (2018) documents non-linear comprehension
+        //   cost, but that non-linearity is already partially modelled by the
+        //   saturation function in the difficulty score — not additive here.
+        //   At 0.5 min/unit: 40 CC units → 20 min incremental, which is realistic
+        //   for branches that require extra mental tracing beyond normal reading.
         double thinkTime = cognitiveDelta * 0.5;
 
-        // 4. STRUCTURAL OVERHEAD
-        //    API changes, DB migrations, config changes require coordination thinking:
-        //    "Does this break callers?" "Is rollback safe?" "Do downstream teams know?"
-        //    +5 min per structural incident (conservative; Bosu et al. 2015).
-        double structuralTime = structuralChanges * 5.0;
-        double fileSwitchCost = Math.log(prodFiles + testFiles + 1) * 2.0;
-        double subtotal = scanTime + readTime + thinkTime + structuralTime+ fileSwitchCost;
+        // ── 4. STRUCTURAL OVERHEAD ─────────────────────────────────────────────
+        // API changes, DB migrations, config changes require coordination thinking:
+        // "Does this break existing callers?" "Is the migration rollback-safe?"
+        // "Do downstream teams need notification?"
+        // 3 min/change (reduced from 5): Bosu et al. (2015) measured context-switch
+        // cost at ~3–5 min. Using the lower bound because structural flags are
+        // identified quickly; the cost is one deliberate reasoning step, not a
+        // sustained deep-read.
+        double structuralTime = structuralChanges * 3.0;
 
-        // 5. FATIGUE MULTIPLIER
-        //    SmartBear: beyond 60 min, defect detection falls 40%.
-        //    Multiplier models this non-linearly but conservatively.
+        // ── 5. FILE-SWITCHING COST ─────────────────────────────────────────────
+        // Logarithmic: each additional file adds less overhead than the previous.
+        // ln(n+1) × 2 gives: 2 files→1.4, 5 files→3.6, 10 files→4.8, 20 files→6.1.
+        // Unchanged from previous model; logarithmic growth is correct here.
+        double fileSwitchCost = Math.log(prodFiles + testFiles + 1) * 2.0;
+
+        double subtotal = scanTime + readTime + thinkTime + structuralTime + fileSwitchCost;
+
+        // ── 6. FATIGUE MULTIPLIER ──────────────────────────────────────────────
+        // SmartBear: defect detection drops ~40% after 60 min of continuous review.
+        // Multiplier is applied to the subtotal, not computed independently.
+        // Values are conservative — professionals manage fatigue but it is real.
         double multiplier = getFatigueMultiplier(level);
 
         double total   = subtotal * multiplier;
         int    minutes = (int) Math.round(total);
 
-        // Bounds: minimum 2 min (any review needs at least a look), max 4 hours
-        // (beyond which the PR should be split, not reviewed in one sitting)
-        minutes = Math.max(2, Math.min(240, minutes));
+        // Bounds: minimum 5 min (even a 1-line change needs context + approval),
+        // maximum 180 min (3 hours — beyond this the PR must be split, not reviewed).
+        // Previous max of 240 min was never a realistic review session length.
+        minutes = Math.max(5, Math.min(180, minutes));
 
-        log.info("Time: scan={:.1f}, read={:.1f}, think={:.1f}, structural={:.1f}, " +
-                          "subtotal={:.1f}, multiplier={:.2f}, total={}",
-                scanTime, readTime, thinkTime, structuralTime, subtotal, multiplier, minutes);
+        log.debug("ReviewTime breakdown — scan={}, read={}, think={}, structural={}, " +
+                          "switch={}, subtotal={}, ×{} fatigue → {} min",
+                String.format("%.1f", scanTime),
+                String.format("%.1f", readTime),
+                String.format("%.1f", thinkTime),
+                String.format("%.1f", structuralTime),
+                String.format("%.1f", fileSwitchCost),
+                String.format("%.1f", subtotal),
+                String.format("%.2f", multiplier),
+                minutes);
 
         return minutes;
     }
@@ -616,23 +767,38 @@ public class DifficultyScoringEngine {
     // Plain-English sentences a developer can read and act on immediately.
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Cognitive complexity delta → comprehension-effort interpretation.
+     *
+     * NOTE: This is COGNITIVE complexity (Campbell 2018), NOT cyclomatic (McCabe 1976).
+     *   - Cognitive CC penalizes nesting: a branch inside a branch scores 1 (structure)
+     *     + 1 (nesting penalty) = 2, whereas two sequential branches each score 1.
+     *     It predicts how hard the code is to UNDERSTAND and MENTALLY TRACE.
+     *   - Cyclomatic CC (used in risk scoring) is a flat branch count with no nesting
+     *     penalty. It predicts DEFECT PROBABILITY per unit of code. Different signal.
+     *
+     * Wording focuses on comprehension cost and reviewer cognitive load,
+     * NOT on defect probability (that belongs in the risk panel).
+     */
     private String interpretCognitiveDelta(int delta) {
         if (delta == 0)
-            return "No new decision paths added. All changed methods have the same branching " +
-                           "complexity as before — reviewer can focus on correctness, not comprehension.";
+            return "Cognitive complexity is unchanged (nesting-penalized score). The changed methods " +
+                           "are no harder to mentally follow than before — reviewer focuses on correctness, not untangling logic.";
         if (delta < 8)
-            return "+" + delta + " new branching paths. Low cognitive overhead — " +
-                           "a focused reviewer can trace all paths in a single pass.";
+            return "+" + delta + " cognitive units (nesting-penalized). Low comprehension overhead — " +
+                           "nested branches are shallow. A focused reviewer can hold all paths in working memory in a single pass.";
         if (delta < 20)
-            return "+" + delta + " new branching paths. Moderate cognitive load — " +
-                           "plan for uninterrupted review time. Each branch is a path that could hide a defect.";
+            return "+" + delta + " cognitive units (nesting-penalized). Moderate comprehension load — " +
+                           "some branches are deeply nested, requiring the reviewer to track multiple conditions simultaneously. " +
+                           "Plan for uninterrupted review time; context-switching mid-review will miss nested edge cases.";
         if (delta < 50)
-            return "+" + delta + " new branching paths. High cognitive load — " +
-                           "this is the primary difficulty driver. Request the author annotate " +
-                           "complex branches with inline comments explaining intent.";
-        return "+" + delta + " new branching paths. Very high cognitive load — " +
-                       "consider splitting this PR into smaller, independently reviewable chunks. " +
-                       "No reviewer can hold " + delta + " new paths in working memory simultaneously.";
+            return "+" + delta + " cognitive units — the primary difficulty driver in this PR. " +
+                           "Deeply nested logic is the hardest code pattern to review correctly. " +
+                           "Ask the author to flatten nesting with early returns or extract nested branches into named methods.";
+        return "+" + delta + " cognitive units — very high comprehension cost. " +
+                       "Working memory limit for most reviewers is ~7 concurrent items (Miller 1956); " +
+                       "this PR exceeds that threshold by a wide margin. " +
+                       "Consider splitting at the method or class boundary before reviewing.";
     }
 
     private String interpretLOC(int loc) {

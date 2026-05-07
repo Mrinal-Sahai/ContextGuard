@@ -14,23 +14,27 @@ import {
   GitBranch,
   Clock,
   TrendingUp,
-  Brain,
   CheckCircle2,
   ExternalLink,
   Network,
   Sun,
-  Moon
+  Moon,
+  Layers,
+  Globe2,
+  Boxes,
+  Radio,
+  Hammer,
+  BrainCircuit,
 } from "lucide-react";
 
 import MermaidDiagram from "./MermaidDiagram";
 import { PRIntelligenceResponse } from "../types/index";
 import { formatDate } from "../services/utility";
-import { InfoTooltip } from "./InfoTooltip";
-import { BreakdownChart } from "./BreakdownChart";
-import { RiskLevelBadge } from "./RiskLevelBadge";
-import { DifficultyBadge } from "./DifficultyBadge";
 import { NarrativeSection } from "./NarrativeSection";
 import { FileChangeItem } from "./FileChangeItem";
+import MergeReadinessBanner from "./MergeReadinessBanner";
+import PRStatusPanel from "./PRStatusPanel";
+import SecurityFindingsPanel from "./SecurityFindingsPanel";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
@@ -45,6 +49,15 @@ export default function ReviewPage() {
   const [error, setError] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [loadingStage, setLoadingStage] = useState(0);
+
+  const LOADING_STAGES = [
+    { label: "Fetching PR metadata", ms: 1500 },
+    { label: "Scoring risk & difficulty", ms: 3000 },
+    { label: "Parsing AST call graph", ms: 10000 },
+    { label: "Generating sequence diagram", ms: 6000 },
+    { label: "AI narrative generation", ms: 5000 },
+  ];
 
   const textPrimary = isDarkMode ? "text-white" : "text-slate-900";
   const textSecondary = isDarkMode ? "text-slate-400" : "text-slate-600";
@@ -98,7 +111,21 @@ export default function ReviewPage() {
 
     fetchAnalysis();
 
-    return () => controller.abort();
+    // Advance loading stage labels while waiting for the response
+    let stageIdx = 0;
+    const advanceStage = () => {
+      if (stageIdx < LOADING_STAGES.length - 1) {
+        stageIdx++;
+        setLoadingStage(stageIdx);
+        stageTimer = setTimeout(advanceStage, LOADING_STAGES[stageIdx].ms);
+      }
+    };
+    let stageTimer = setTimeout(advanceStage, LOADING_STAGES[0].ms);
+
+    return () => {
+      controller.abort();
+      clearTimeout(stageTimer);
+    };
   }, [analysisId]);
 
 
@@ -145,15 +172,40 @@ const generatePDF = async () => {
 
   if (loading)
     return (
-      <div className={`flex items-center justify-center min-h-screen text-lg ${bgPage}`}>
-        Loading analysis...
+      <div className={`flex items-center justify-center min-h-screen ${bgPage}`}>
+        <div className="w-full max-w-sm space-y-6 px-6">
+          <div className="text-center space-y-2">
+            <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className={`text-base font-semibold ${textPrimary}`}>Analysing PR...</p>
+          </div>
+          <div className="space-y-2">
+            {LOADING_STAGES.map((stage, idx) => (
+              <div key={idx} className={`flex items-center gap-3 text-sm transition-opacity duration-500 ${idx > loadingStage ? "opacity-30" : "opacity-100"}`}>
+                {idx < loadingStage ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : idx === loadingStage ? (
+                  <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                ) : (
+                  <div className="w-4 h-4 rounded-full border border-slate-500 shrink-0" />
+                )}
+                <span className={idx === loadingStage ? "text-indigo-400 font-medium" : textSecondary}>
+                  {stage.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
 
   if (error || !analysisData)
     return (
-      <div className={`flex items-center justify-center min-h-screen text-lg ${bgPage}`}>
-        Loading Analysis
+      <div className={`flex items-center justify-center min-h-screen ${bgPage}`}>
+        <div className="text-center space-y-3">
+          <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto" />
+          <p className={`text-lg font-semibold ${textPrimary}`}>Analysis not found</p>
+          <p className={`text-sm ${textSecondary}`}>The analysis ID may be invalid or the result has expired.</p>
+        </div>
       </div>
     );
 
@@ -226,6 +278,17 @@ const generatePDF = async () => {
         </div>
         </div>
 
+        {/* Merge Readiness Verdict */}
+        <MergeReadinessBanner
+          risk={analysisData.risk}
+          difficulty={analysisData.difficulty}
+          semgrepFindingCount={analysisData.metrics?.semgrepFindingCount}
+          highSeveritySastFindingCount={analysisData.metrics?.highSeveritySastFindingCount}
+          compilationStatus={analysisData.compilationStatus}
+          astAccurate={analysisData.metrics?.astAccurate}
+          isDarkMode={isDarkMode}
+        />
+
         {/* Key Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <MetricCard
@@ -263,95 +326,105 @@ const generatePDF = async () => {
           />
         </div>
 
-        {/* Risk + Difficulty */}
-        <div className="grid md:grid-cols-2 gap-6">
-          <div className={`border rounded-xl p-6 ${cardBg}`}>
-            <h3 className={`text-sm font-semibold ${textSecondary} mb-4 flex items-center gap-2`}>
-              <AlertTriangle className="w-4 h-4" />
-              Risk Assessment
-              <InfoTooltip
-                content="Overall risk score based on critical files and impact."
-                isDarkMode={isDarkMode}
-              />
-            </h3>
+        {/* Risk + Difficulty — full signal breakdown with formulas and research evidence */}
+        <RiskDifficultyPanel
+          risk={analysisData.risk}
+          difficulty={analysisData.difficulty}
+          isDarkMode={isDarkMode}
+        />
 
-            <RiskLevelBadge
-              level={analysisData.risk?.level}
-              score={analysisData.risk?.overallScore}
-              isDarkMode={isDarkMode}
-            />
-          </div>
 
-          <div className={`border rounded-xl p-6 ${cardBg}`}>
-            <h3 className={`text-sm font-semibold ${textSecondary} mb-4 flex items-center gap-2`}>
-              <Brain className="w-4 h-4" />
-              Difficulty Assessment
-            </h3>
+        {/* PR Health Checks — merge conflicts + compilation errors */}
+        {(analysisData.mergeConflictStatus || analysisData.compilationStatus) && (
+          <PRStatusPanel
+            mergeConflictStatus={analysisData.mergeConflictStatus}
+            compilationStatus={analysisData.compilationStatus}
+            isDarkMode={isDarkMode}
+          />
+        )}
 
-            <DifficultyBadge
-              level={analysisData.difficulty?.level}
-              minutes={analysisData.difficulty?.estimatedReviewMinutes}
-              isDarkMode={isDarkMode}
-            />
-          </div>
-        </div>
-
-       <RiskDifficultyPanel
-  risk={analysisData.risk}
-  difficulty={analysisData.difficulty}
-  isDarkMode={isDarkMode}
-/>
-
+        {/* Security Findings — secret scan + Semgrep SAST */}
+        {analysisData.sastFindings && analysisData.sastFindings.length > 0 && (
+          <SecurityFindingsPanel
+            findings={analysisData.sastFindings}
+            isDarkMode={isDarkMode}
+          />
+        )}
 
         {/* Blast Radius */}
-        <div className={`border rounded-xl p-6 ${cardBg}`}>
-          <h3 className={`text-lg font-bold ${textPrimary} mb-4`}>
-            Blast Radius Assessment
-          </h3>
-
-          <div className="grid md:grid-cols-3 gap-6">
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Impact Scope</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.scope}
-              </div>
-            </div>
-
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Directories</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.affectedDirectories}
-              </div>
-            </div>
-
-            <div>
-              <div className={`text-sm ${textSecondary}`}>Modules</div>
-              <div className={`text-2xl font-bold ${textPrimary}`}>
-                {analysisData.blastRadius?.affectedModules}
-              </div>
-            </div>
-          </div>
-        </div>
+        {analysisData.blastRadius && <BlastRadiusCard blastRadius={analysisData.blastRadius} isDarkMode={isDarkMode} cardBg={cardBg} textPrimary={textPrimary} textSecondary={textSecondary} />}
 
         {<ASTMetricsPanel metrics={analysisData.metrics} isDarkMode={isDarkMode}/>}
 
 
 
-{analysisData.narrative && (
-        <NarrativeSection
-          narrative={analysisData.narrative}
-          isDarkMode={isDarkMode}
-        />
-)}
+{analysisData.aiSkipReason ? (
+          /* AI skipped notice — shown in place of both narrative and diagram */
+          <div className={`border rounded-xl p-6 border-amber-500/30 ${isDarkMode ? "bg-amber-950/20" : "bg-amber-50"}`}>
+            <div className="flex items-start gap-3 mb-4">
+              <div className="p-2 rounded-lg bg-amber-500/15 shrink-0">
+                <BrainCircuit className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h3 className={`text-sm font-semibold ${isDarkMode ? "text-amber-300" : "text-amber-700"}`}>
+                  AI Analysis Not Generated
+                </h3>
+                <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? "text-amber-400/80" : "text-amber-600"}`}>
+                  The sequence diagram and AI narrative were skipped to avoid wasting tokens on code that
+                  does not compile. Generating analysis for a broken build produces misleading results.
+                </p>
+              </div>
+            </div>
+            <div className={`flex items-start gap-2 p-3 rounded-lg border ${isDarkMode ? "bg-slate-800/60 border-slate-700/50" : "bg-white border-slate-200"}`}>
+              <Hammer className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <p className={`text-xs leading-relaxed ${isDarkMode ? "text-slate-300" : "text-slate-700"}`}>
+                {analysisData.aiSkipReason}
+              </p>
+            </div>
+            <p className={`text-xs mt-3 ${isDarkMode ? "text-slate-500" : "text-slate-400"}`}>
+              Fix all compilation errors shown in the Build Errors panel, then re-submit the PR URL to generate a full analysis.
+            </p>
+          </div>
+        ) : (
+          <>
+            {analysisData.narrative && (
+              <NarrativeSection
+                narrative={analysisData.narrative}
+                isDarkMode={isDarkMode}
+              />
+            )}
 
-       {/* Mermaid */}
-        {analysisData.mermaidDiagram && (
-          <MermaidDiagram
-            diagram={analysisData.mermaidDiagram}
-            verificationNotes={analysisData.diagramVerificationNotes}
-            metrics={analysisData.diagramMetrics}
-            isDarkMode={isDarkMode}
-          />
+            {/* Call Graph Diagram */}
+            {analysisData.mermaidDiagram ? (
+              <MermaidDiagram
+                diagram={analysisData.mermaidDiagram}
+                verificationNotes={analysisData.diagramVerificationNotes}
+                metrics={analysisData.diagramMetrics}
+                isDarkMode={isDarkMode}
+              />
+            ) : (
+              <div className={`border rounded-xl p-6 ${cardBg}`}>
+                <h3 className={`text-lg font-bold ${textPrimary} mb-2`}>Call Graph Diagram</h3>
+                <div className={`flex items-start gap-3 text-sm ${textSecondary}`}>
+                  <Network className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Diagram not yet available</p>
+                    <p className="mt-1">
+                      The sequence diagram is generated after AST parsing completes.
+                      This happens asynchronously — refresh in a few seconds, or it may be unavailable
+                      if the repository uses only unsupported languages (Ruby, plain JS without type info).
+                    </p>
+                    {analysisData.diagramMetrics && (
+                      <p className="mt-2 text-xs">
+                        Partial graph data: {analysisData.diagramMetrics.totalNodes} nodes,{" "}
+                        {analysisData.diagramMetrics.totalEdges} edges, max depth {analysisData.diagramMetrics.maxDepth}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {/* File Changes */}
@@ -425,6 +498,92 @@ const generatePDF = async () => {
         </footer>
       </div>
     </div>
+    </div>
+  );
+}
+
+// ─── Blast Radius Card ─────────────────────────────────────────────────────────
+
+const SCOPE_META: Record<string, { color: string; bg: string; border: string; label: string; description: string }> = {
+  LOCALIZED:    { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30", label: "Localized",    description: "Change is contained to a single module and layer. Minimal cross-component risk." },
+  COMPONENT:    { color: "text-cyan-400",    bg: "bg-cyan-500/10",    border: "border-cyan-500/30",    label: "Component",    description: "Multiple layers within one module affected. Review for layer contract changes." },
+  MODULE:       { color: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/30",   label: "Module",       description: "Crosses module boundaries. Downstream consumers of the changed module may be affected." },
+  CROSS_MODULE: { color: "text-orange-400",  bg: "bg-orange-500/10",  border: "border-orange-500/30",  label: "Cross-Module", description: "Multiple modules affected. Integration test coverage across module boundaries is essential." },
+  SYSTEM_WIDE:  { color: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/30",    label: "System-Wide",  description: "4+ modules or 3+ architectural layers touched. Full regression test suite required before merge." },
+};
+
+function BlastRadiusCard({ blastRadius, isDarkMode, cardBg, textPrimary, textSecondary }: {
+  blastRadius: NonNullable<import('../types/index').PRIntelligenceResponse['blastRadius']>;
+  isDarkMode: boolean; cardBg: string; textPrimary: string; textSecondary: string;
+}) {
+  const scopeKey = blastRadius.scope?.replace(/-/g, "_") ?? "LOCALIZED";
+  const meta = SCOPE_META[scopeKey] ?? SCOPE_META["LOCALIZED"];
+  const cellBg = isDarkMode ? "bg-slate-900/50 border-slate-700/50" : "bg-slate-50 border-slate-200";
+
+  return (
+    <div className={`border rounded-xl p-6 ${cardBg}`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-5">
+        <Radio className={`w-5 h-5 ${meta.color}`} />
+        <h3 className={`text-sm font-semibold uppercase tracking-wider ${textSecondary}`}>
+          Blast Radius Assessment
+        </h3>
+        <span className={`ml-auto px-2.5 py-0.5 rounded-full text-xs font-bold border ${meta.bg} ${meta.color} ${meta.border}`}>
+          {meta.label}
+        </span>
+      </div>
+
+      {/* Scope description */}
+      <p className={`text-sm mb-5 ${textSecondary}`}>{meta.description}</p>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Boxes className="w-3.5 h-3.5" /> Modules
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedModules ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedModuleNames?.slice(0, 2).join(", ") || "—"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Layers className="w-3.5 h-3.5" /> Arch. Layers
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedLayerCount ?? blastRadius.affectedLayers?.length ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedLayers?.join(" → ") || "none"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Globe2 className="w-3.5 h-3.5" /> Domains
+          </div>
+          <div className={`text-2xl font-black ${meta.color}`}>{blastRadius.affectedDomains?.length ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>
+            {blastRadius.affectedDomains?.join(", ") || "—"}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-3 border ${cellBg}`}>
+          <div className={`text-xs mb-1 flex items-center gap-1 ${textSecondary}`}>
+            <Network className="w-3.5 h-3.5" /> Directories
+          </div>
+          <div className={`text-2xl font-black ${textPrimary}`}>{blastRadius.affectedDirectories ?? 0}</div>
+          <div className={`text-xs mt-0.5 ${textSecondary}`}>changed paths</div>
+        </div>
+      </div>
+
+      {/* Reviewer guidance */}
+      {blastRadius.reviewerGuidance && (
+        <div className={`flex items-start gap-2 text-sm p-3 rounded-lg border ${meta.bg} ${meta.border}`}>
+          <Radio className={`w-4 h-4 shrink-0 mt-0.5 ${meta.color}`} />
+          <span className={meta.color}>{blastRadius.reviewerGuidance}</span>
+        </div>
+      )}
     </div>
   );
 }

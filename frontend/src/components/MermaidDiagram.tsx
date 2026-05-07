@@ -7,7 +7,11 @@ import {
   Maximize2,
   Download,
   Eye,
-  EyeOff
+  EyeOff,
+  AlertTriangle,
+  Copy,
+  Check,
+  ExternalLink,
 } from "lucide-react";
 
 interface MermaidDiagramProps {
@@ -50,16 +54,28 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
     mermaid.initialize({
       startOnLoad: false,
       theme: isDarkMode ? "dark" : "default",
-      securityLevel: "loose",
+      // "strict" sanitizes SVG output and disables script injection.
+      // "loose" was previously used but creates an XSS surface when LLM output
+      // is passed directly to mermaid.render() without sanitization.
+      securityLevel: "strict",
       flowchart: {
         useMaxWidth: false,
-        htmlLabels: true,
+        htmlLabels: false, // must be false with securityLevel "strict"
         curve: "basis"
       }
     });
   }, [isDarkMode]);
 
   /* ---------------- Diagram Render ---------------- */
+
+  /** Render with a hard timeout so a pathologically complex diagram can't freeze the UI. */
+  const renderWithTimeout = (diagramText: string, timeoutMs = 12000): Promise<{ svg: string }> => {
+    const renderPromise = mermaid.render(`m-${Date.now()}`, diagramText);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Mermaid render timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+    );
+    return Promise.race([renderPromise, timeoutPromise]);
+  };
 
   useEffect(() => {
     if (!diagram || !containerRef.current) return;
@@ -68,7 +84,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
 
     const render = async () => {
       try {
-        const { svg } = await mermaid.render(`m-${Date.now()}`, diagram);
+        const { svg } = await renderWithTimeout(diagram);
 
         if (id !== renderId.current) return;
 
@@ -81,10 +97,13 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
         }
 
         setError(null);
-
         setTimeout(fitToScreen, 30);
       } catch (e: any) {
-        setError(e.message);
+        // Extract the most useful part of the Mermaid error message.
+        // Raw Mermaid errors often contain the full diagram text which is unhelpful.
+        const raw: string = e?.message ?? "Unknown render error";
+        const firstLine = raw.split("\n")[0].substring(0, 200);
+        setError(firstLine);
       }
     };
 
@@ -172,6 +191,15 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
 
   const stopDragging = () => setDragging(false);
 
+  /* ---------------- Open in Mermaid Live ---------------- */
+
+  const openInMermaidLive = () => {
+    // Mermaid Live Editor accepts a base64url-encoded JSON state object
+    const state = { code: diagram, mermaid: { theme: isDarkMode ? "dark" : "default" }, updateEditor: false };
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+    window.open(`https://mermaid.live/edit#base64:${encoded}`, "_blank", "noreferrer");
+  };
+
   /* ---------------- Download ---------------- */
 
   const handleDownload = () => {
@@ -238,8 +266,12 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
             <Maximize2 size={16} />
           </button>
 
-          <button onClick={handleDownload} className={`p-2 border rounded ${btn}`}>
+          <button onClick={handleDownload} className={`p-2 border rounded ${btn}`} title="Download SVG">
             <Download size={16} />
+          </button>
+
+          <button onClick={openInMermaidLive} className={`p-2 border rounded ${btn}`} title="Open in Mermaid Live">
+            <ExternalLink size={16} />
           </button>
         </div>
       </div>
@@ -283,9 +315,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
         onMouseLeave={stopDragging}
       >
         {error ? (
-          <div className="flex items-center justify-center h-full text-red-500">
-            {error}
-          </div>
+          <DiagramError error={error} diagram={diagram} isDarkMode={isDarkMode} />
         ) : (
           <div
             ref={containerRef}
@@ -296,6 +326,90 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({
             }}
           />
         )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Diagram error panel ──────────────────────────────────────────────────────
+// Shown when mermaid.render() throws. Displays:
+//   - The parse error message (trimmed to the first meaningful line)
+//   - The raw diagram source so devs can reproduce / paste into mermaid.live
+//   - A copy button for the raw source
+
+const DiagramError: React.FC<{ error: string; diagram: string; isDarkMode: boolean }> = ({
+  error,
+  diagram,
+  isDarkMode,
+}) => {
+  const [copied, setCopied] = useState(false);
+  const [showSource, setShowSource] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(diagram).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const border  = isDarkMode ? "border-rose-500/30"  : "border-rose-200";
+  const bg      = isDarkMode ? "bg-rose-950/30"       : "bg-rose-50";
+  const errText = isDarkMode ? "text-rose-300"         : "text-rose-700";
+  const muted   = isDarkMode ? "text-slate-400"        : "text-slate-500";
+  const codeBg  = isDarkMode ? "bg-slate-900 border-slate-700" : "bg-white border-slate-200";
+
+  return (
+    <div className={`m-6 rounded-xl border ${border} ${bg} p-5 space-y-4`}>
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className={`text-sm font-semibold ${errText}`}>Diagram render failed</div>
+          <div className={`text-xs mt-1 font-mono break-all ${errText} opacity-80`}>{error}</div>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => setShowSource(s => !s)}
+          className={`text-xs px-3 py-1.5 rounded-lg border ${isDarkMode ? "border-slate-600 text-slate-300 hover:bg-slate-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"} transition-colors`}
+        >
+          {showSource ? "Hide" : "Show"} raw diagram source
+        </button>
+        <button
+          onClick={handleCopy}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+            copied
+              ? "border-emerald-500/40 text-emerald-400"
+              : isDarkMode
+              ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+              : "border-slate-300 text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? "Copied!" : "Copy source"}
+        </button>
+        <a
+          href="https://mermaid.live"
+          target="_blank"
+          rel="noreferrer"
+          className={`text-xs px-3 py-1.5 rounded-lg border ${isDarkMode ? "border-slate-600 text-slate-300 hover:bg-slate-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"} transition-colors`}
+        >
+          Open mermaid.live ↗
+        </a>
+      </div>
+
+      {/* Raw source */}
+      {showSource && (
+        <pre className={`text-xs font-mono rounded-lg border p-4 overflow-auto max-h-72 whitespace-pre-wrap break-all ${codeBg} ${muted}`}>
+          {diagram}
+        </pre>
+      )}
+
+      <div className={`text-xs ${muted}`}>
+        Paste the source into{" "}
+        <span className="font-mono">mermaid.live</span> to debug the syntax, then report the issue.
       </div>
     </div>
   );

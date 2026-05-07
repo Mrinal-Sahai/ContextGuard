@@ -12,6 +12,7 @@ import io.contextguard.client.AIRouter;
 import io.contextguard.dto.*;
 import io.contextguard.engine.DiffParser;
 import io.contextguard.engine.DifficultyScoringEngine;
+import io.contextguard.dto.SemgrepFinding;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -108,7 +109,8 @@ public class AIGenerationService {
             DifficultyAssessment difficulty,
             BlastRadiusAssessment blastRadius,
             CallGraphDiff callGraph,
-            AIProvider provider) {
+            AIProvider provider,
+            List<SemgrepFinding> semgrepFindings) {
 
         // POST-AST RESCORING:
         // If AST has fed back accurate complexityDelta into metrics,
@@ -117,8 +119,10 @@ public class AIGenerationService {
         RiskAssessment      finalRisk       = rescore(metrics, risk, metadata);
         DifficultyAssessment finalDifficulty = rescoreDifficulty(metrics, difficulty, metadata);
 
+        List<SemgrepFinding> findings = semgrepFindings != null ? semgrepFindings : List.of();
+
         String prompt = buildPrompt(
-                metadata, metrics, finalRisk, finalDifficulty, blastRadius, files, callGraph);
+                metadata, metrics, finalRisk, finalDifficulty, blastRadius, files, callGraph, findings);
 
         try {
             AIClient client   = aiRouter.getClient(provider);
@@ -171,7 +175,8 @@ public class AIGenerationService {
             DifficultyAssessment difficulty,
             BlastRadiusAssessment blastRadius,
             List<GitHubFile> files,
-            CallGraphDiff callGraph) {
+            CallGraphDiff callGraph,
+            List<SemgrepFinding> semgrepFindings) {
 
         List<FileChangeSummary> priorityFiles = selectPriorityFiles(metrics.getFileChanges(), 8);
 
@@ -282,6 +287,12 @@ public class AIGenerationService {
         // ── SECTION 10: TEST COVERAGE ──────────────────────────────────────────
         p.append("\nTEST_COVERAGE\n");
         p.append(buildTestCoverageAnalysis(metrics, files)).append("\n");
+
+        // ── SECTION 10B: SEMGREP SAST FINDINGS (ground truth — injected pre-LLM) ─
+        // These are real findings from Semgrep OSS rules (security, bugs, best practices).
+        // They are NOT LLM inference — treat them as facts.
+        p.append("\nSTATIC_ANALYSIS_FINDINGS (Semgrep OSS — ground truth, not inference)\n");
+        p.append(buildSemgrepSection(semgrepFindings)).append("\n");
 
         // ── SECTION 11: NEGATIVE EXAMPLES (recency: always attended) ──────────
         p.append("\nUNCHANGED_METHODS — DO NOT REFERENCE THESE\n");
@@ -762,6 +773,25 @@ public class AIGenerationService {
         return sb.toString();
     }
 
+    /**
+     * Renders Semgrep SAST findings as ground-truth facts in the prompt.
+     * The LLM must reference these in RISK_INTERPRETATION and CHECKLIST.
+     * If no findings: explicit "no findings" statement so the LLM doesn't invent issues.
+     */
+    private String buildSemgrepSection(List<SemgrepFinding> findings) {
+        if (findings == null || findings.isEmpty()) {
+            return "No Semgrep security findings in changed files.\n";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("The following issues were detected by static analysis. Reference them in RISK_INTERPRETATION and CHECKLIST:\n");
+        findings.stream().limit(20).forEach(f -> sb.append(f.toPromptLine()).append("\n"));
+        long highCount = findings.stream().filter(SemgrepFinding::isHighSeverity).count();
+        if (highCount > 0) {
+            sb.append("→ ").append(highCount).append(" HIGH severity finding(s) — elevate risk assessment accordingly.\n");
+        }
+        return sb.toString();
+    }
+
     private String buildUnchangedMethodWarning(CallGraphDiff callGraph) {
         if (callGraph == null || callGraph.getNodesUnchanged() == null
                     || callGraph.getNodesUnchanged().isEmpty()) return "N/A\n";
@@ -782,8 +812,8 @@ STRICT RULES:
 2. ONLY reference methods from CHANGED_METHODS. Zero exceptions.
 3. Never reference methods from UNCHANGED_METHODS.
 4. For BEHAVIORAL_CHANGES: cite specific method names and annotation changes from BEHAVIORAL_SIGNALS.
-5. For RISK_INTERPRETATION: reference the primary driver explicitly.
-6. For CHECKLIST: generate specific, actionable items based on the signals above.
+5. For RISK_INTERPRETATION: reference the primary driver explicitly. If STATIC_ANALYSIS_FINDINGS has HIGH severity items, they MUST appear in RISK_INTERPRETATION.
+6. For CHECKLIST: generate specific, actionable items based on the signals above. Each Semgrep HIGH/ERROR finding from STATIC_ANALYSIS_FINDINGS must produce a checklist item.
    Do NOT write generic items like "ensure tests pass."
 7. Total response ≤ 700 words.
 8. If a field cannot be determined from evidence, write: "Insufficient data."

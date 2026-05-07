@@ -81,7 +81,7 @@ import java.util.List;
  * │                                │        │ in a separate PR or repo).      │
  * └────────────────────────────────┴────────┴──────────────────────────────────┘
  *
- * TOTAL WEIGHTS: 0.20 + 0.30 + 0.20 + 0.20 + 0.10 = 1.00 ✓
+ * TOTAL WEIGHTS: 0.20 + 0.25 + 0.15 + 0.20 + 0.10 + 0.10 = 1.00 ✓
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  * FILE-LEVEL RISK NUMERIC MAPPING
@@ -138,11 +138,19 @@ public class RiskScoringEngine {
     /** Mean file-level risk across all changed files */
     private static final double W_AVERAGE_RISK      = 0.20;
 
-    /** Highest individual file risk in the PR */
-    private static final double W_PEAK_RISK         = 0.30;
+    /**
+     * Highest individual file risk in the PR.
+     * Reduced from 0.30 → 0.25: SAST findings now carry direct security evidence,
+     * so peak file risk no longer needs to carry as much weight alone.
+     */
+    private static final double W_PEAK_RISK         = 0.25;
 
-    /** Cognitive complexity delta, normalized */
-    private static final double W_COMPLEXITY        = 0.20;
+    /**
+     * Cognitive complexity delta, normalized.
+     * Reduced from 0.20 → 0.15: complexity is now a supplementary signal
+     * to SAST findings, which are stronger direct evidence of defects.
+     */
+    private static final double W_COMPLEXITY        = 0.15;
 
     /** Proportion of files on critical execution paths */
     private static final double W_CRITICAL_DENSITY  = 0.20;
@@ -150,10 +158,25 @@ public class RiskScoringEngine {
     /** Proportion of changed prod files with no test changes */
     private static final double W_TEST_COVERAGE_GAP = 0.10;
 
+    /**
+     * SAST findings signal — Semgrep OSS rules or GitHub CodeQL alerts.
+     * Weight 0.10: confirmed security/bug findings are ground truth, not inference.
+     * Normalized: signal = findings / (SAST_PIVOT + findings) where PIVOT = 3.
+     * At 3 findings → signal = 0.50 (moderate risk injection).
+     * At 6 findings → signal = 0.67 (high risk injection).
+     * Justification: each Semgrep finding represents a confirmed code pattern
+     * associated with a known vulnerability class (CWE). This is the same
+     * enrichment used by CodeRabbit and SonarQube to ground LLM risk output.
+     */
+    private static final double W_SAST_FINDINGS     = 0.10;
+
+    /** SAST saturation pivot: 3 findings = 0.50 signal */
+    private static final double SAST_PIVOT          = 3.0;
+
     // Sanity-check at class load time
     static {
         double sum = W_AVERAGE_RISK + W_PEAK_RISK + W_COMPLEXITY
-                             + W_CRITICAL_DENSITY + W_TEST_COVERAGE_GAP;
+                             + W_CRITICAL_DENSITY + W_TEST_COVERAGE_GAP + W_SAST_FINDINGS;
         assert Math.abs(sum - 1.0) < 1e-9
                 : "RiskScoringEngine weights must sum to 1.0, got: " + sum;
     }
@@ -212,14 +235,22 @@ public class RiskScoringEngine {
         double criticalDensity = (double) criticalCount / totalFiles;
 
         // ── Signal 5: Test coverage gap ───────────────────────────────────────
-        // Heuristic: count production files that have no corresponding test file change
         long prodFiles = files.stream()
                                  .filter(f -> !isTestFile(f.getFilename()))
                                  .count();
-        long prodFilesWithTestChanges = countProdFilesWithTestCoverage(files);
-        double testCoverageGap = prodFiles > 0
-                                         ? 1.0 - ((double) prodFilesWithTestChanges / prodFiles)
-                                         : 0.0;
+        double testCoverageGap = computeTestCoverageGap(files);
+
+        // ── Signal 6: SAST findings (Semgrep / GitHub CodeQL) ─────────────────
+        // Ground-truth findings from static analysis — confirmed code patterns
+        // associated with known vulnerability classes. Not LLM inference.
+        // Normalization: signal = count / (SAST_PIVOT + count)
+        //   0 findings → 0.00 (no SAST evidence)
+        //   1 finding  → 0.25 (one confirmed pattern)
+        //   3 findings → 0.50 (pivot — moderate risk injection)
+        //   6 findings → 0.67 (high risk injection)
+        //  10 findings → 0.77 (capped effect — further findings don't linearly increase risk)
+        int    sastCount   = metrics.getSemgrepFindingCount();
+        double sastSignal  = saturate(sastCount, SAST_PIVOT);
 
         // ── Weighted aggregation ──────────────────────────────────────────────
         double overallScore =
@@ -227,7 +258,8 @@ public class RiskScoringEngine {
                         (W_PEAK_RISK         * peakRisk)          +
                         (W_COMPLEXITY        * complexitySignal)  +
                         (W_CRITICAL_DENSITY  * criticalDensity)   +
-                        (W_TEST_COVERAGE_GAP * testCoverageGap);
+                        (W_TEST_COVERAGE_GAP * testCoverageGap)   +
+                        (W_SAST_FINDINGS     * sastSignal);
 
         overallScore = clamp(overallScore, 0.0, 1.0);
         RiskLevel level = categorize(overallScore);
@@ -269,15 +301,22 @@ public class RiskScoringEngine {
                         .weightedContribution(round3(W_AVERAGE_RISK * averageRisk))
                         .build(),
 
+                // CYCLOMATIC complexity (McCabe 1976): flat branch count, nesting-unaware.
+                // Each if/for/while/case/&&/|| adds +1 regardless of nesting depth.
+                // Signal role: DEFECT PROBABILITY — not comprehension difficulty.
+                // Distinct from Cognitive Complexity in DifficultyScoringEngine, which
+                // penalises nesting and predicts reviewer comprehension time.
                 SignalInterpretation.builder()
                         .key("complexity")
                         .label("Cyclomatic Complexity Δ")
                         .rawValue(rawComplexityDelta)
-                        .unit("new decision branches added  (pivot: 20 units = 0.50 signal)")
+                        .unit("new execution paths added (flat, nesting-unaware) — predicts defect probability, pivot: 20 = 0.50 signal")
                         .signalVerdict(interpretComplexityVerdict(rawComplexityDelta))
                         .whatItMeans(interpretComplexity(rawComplexityDelta))
-                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 CC unit ≈ +0.15 defects/KLOC. " +
-                                          "Signal = delta / (20 + delta) so it never saturates above 1.0.")
+                        .evidence("Banker et al. (1993), MIS Quarterly — each +1 cyclomatic CC unit ≈ +0.15 defects/KLOC. " +
+                                          "McCabe (1976): CC = 1 + decision_points, nesting depth not penalised. " +
+                                          "Distinct from Cognitive Complexity (Difficulty panel) which penalises nesting and " +
+                                          "predicts comprehension time — these are complementary signals, not duplicates.")
                         .weight(W_COMPLEXITY)
                         .normalizedSignal(round3(complexitySignal))
                         .weightedContribution(round3(W_COMPLEXITY * complexitySignal))
@@ -311,6 +350,25 @@ public class RiskScoringEngine {
                         .weight(W_TEST_COVERAGE_GAP)
                         .normalizedSignal(round3(testCoverageGap))
                         .weightedContribution(round3(W_TEST_COVERAGE_GAP * testCoverageGap))
+                        .build(),
+
+                SignalInterpretation.builder()
+                        .key("sast")
+                        .label("SAST Findings")
+                        .rawValue(sastCount)
+                        .unit("confirmed findings from Semgrep OSS static analysis  (pivot: 3 findings = 0.50 signal)")
+                        .signalVerdict(sastCount == 0 ? "LOW"
+                                               : sastCount <= 2 ? "MEDIUM"
+                                                         : sastCount <= 5 ? "HIGH" : "CRITICAL")
+                        .whatItMeans(interpretSast(sastCount))
+                        .evidence("Semgrep OSS (2,000+ rules) — findings represent confirmed code patterns " +
+                                          "matching known vulnerability classes (CWE, OWASP Top 10). " +
+                                          "Unlike complexity metrics, SAST findings are ground truth: " +
+                                          "the pattern exists at an exact file + line. Each finding " +
+                                          "directly evidences a defect category, not a probability.")
+                        .weight(W_SAST_FINDINGS)
+                        .normalizedSignal(round3(sastSignal))
+                        .weightedContribution(round3(W_SAST_FINDINGS * sastSignal))
                         .build()
         );
 
@@ -321,13 +379,15 @@ public class RiskScoringEngine {
                                           .complexityContribution(round3(W_COMPLEXITY * complexitySignal))
                                           .criticalPathDensityContribution(round3(W_CRITICAL_DENSITY * criticalDensity))
                                           .testCoverageGapContribution(round3(W_TEST_COVERAGE_GAP * testCoverageGap))
+                                          .sastFindingsContribution(round3(W_SAST_FINDINGS * sastSignal))
                                           // Raw values
                                           .rawAverageRisk(round3(averageRisk))
                                           .rawPeakRisk(round3(peakRisk))
                                           .rawComplexityDelta(rawComplexityDelta)
                                           .rawCriticalDensity(round3(criticalDensity))
                                           .rawTestCoverageGap(round3(testCoverageGap))
-                                          // NEW: full signal interpretations for self-explanatory UI
+                                          .rawSastFindings(sastCount)
+                                          // Full signal interpretations for self-explanatory UI
                                           .signals(signals)
                                           .build();
 
@@ -396,15 +456,36 @@ public class RiskScoringEngine {
         }
     }
 
+    /**
+     * Cyclomatic complexity delta → defect-probability interpretation.
+     *
+     * NOTE: This is CYCLOMATIC (McCabe 1976) complexity, NOT cognitive complexity.
+     *   - Cyclomatic CC = flat branch count: each if/for/while/case/&&/|| adds +1
+     *     regardless of nesting depth. It predicts DEFECT PROBABILITY (Banker 1993).
+     *   - Cognitive CC (used in difficulty scoring) penalizes nesting: an if inside
+     *     an if scores higher than two sequential ifs. It predicts COMPREHENSION TIME
+     *     (Campbell 2018). They measure different things — that is intentional.
+     *
+     * The wording here deliberately focuses on defect rate and production risk,
+     * NOT on how hard the code is to read (that belongs in the difficulty panel).
+     */
     private String interpretComplexity(int delta) {
-        if (delta == 0) return "No cyclomatic complexity added. All changed methods are equally complex as before.";
-        if (delta < 10)  return "+" + delta + " decision branches added — modest increase. " +
-                                        "Each branch is a new path the reviewer must mentally trace and validate.";
-        if (delta < 30)  return "+" + delta + " decision branches added — moderate increase. " +
-                                        "Allocate extra focused time to trace all new conditional paths.";
-        return "+" + delta + " decision branches added — significant increase. " +
-                       "At +1 CC ≈ +0.15 defects/KLOC, this level of branching materially raises defect probability. " +
-                       "Request the author add inline comments explaining each non-obvious branch.";
+        if (delta == 0)
+            return "No new cyclomatic branches added (flat McCabe count). Every changed method " +
+                           "has the same number of execution paths as before — no new defect surfaces introduced.";
+        if (delta < 10)
+            return "+" + delta + " new execution paths (cyclomatic, nesting-unaware). " +
+                           "Banker et al. (1993): each +1 CC ≈ +0.15 defects/KLOC — modest defect risk increase. " +
+                           "Each path is a production code route that could hide a regression.";
+        if (delta < 30)
+            return "+" + delta + " new execution paths (cyclomatic). " +
+                           "Materially raises defect probability: at +1 CC ≈ +0.15 defects/KLOC, " +
+                           "this delta corresponds to roughly +" + (int)(delta * 0.15) + " projected defects/KLOC. " +
+                           "Verify each new branch has a corresponding test case.";
+        return "+" + delta + " new execution paths — significant cyclomatic complexity increase. " +
+                       "Projected defect density increase: +" + (int)(delta * 0.15) + " defects/KLOC (Banker 1993). " +
+                       "Each untested branch is a potential production incident. " +
+                       "Request the author break complex branches into named methods to reduce path count.";
     }
 
     private String interpretComplexityVerdict(int delta) {
@@ -439,6 +520,22 @@ public class RiskScoringEngine {
                        "Prioritise adding tests for the highest-risk uncovered files.";
     }
 
+    private String interpretSast(int count) {
+        if (count == 0)
+            return "Semgrep found no security or bug-pattern findings in the changed files. " +
+                           "This does not guarantee absence of issues — rules cover known patterns only.";
+        if (count == 1)
+            return "1 SAST finding detected. This is a confirmed code pattern matching a known vulnerability " +
+                           "class. Review the STATIC_ANALYSIS_FINDINGS in the AI narrative and verify it applies " +
+                           "in context.";
+        if (count <= 3)
+            return count + " SAST findings detected. Each represents a confirmed code pattern (CWE/OWASP category). " +
+                           "These are ground truth — not inferences. Each one should produce a checklist item.";
+        return count + " SAST findings detected — this is a high finding density. Multiple confirmed " +
+                       "vulnerability patterns in changed files. This PR requires security-focused review " +
+                       "before merge. Consider a dedicated security pass.";
+    }
+
     private double mapRiskToNumeric(RiskLevel level) {
         if (level == null) return 0.15;
         return switch (level) {
@@ -468,42 +565,105 @@ public class RiskScoringEngine {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Count production files that have a corresponding test file also changed
-     * in this PR. This is a heuristic — a test for "UserService" is assumed
-     * to be "UserServiceTest", "UserServiceSpec", etc.
+     * Compute what fraction of production files changed in this PR have NO test
+     * coverage signal. Two-pass heuristic:
+     *
+     * Pass 1 — named match: a test file whose path contains the production
+     * file's base name (e.g. UserService ↔ UserServiceTest). Strongest signal.
+     *
+     * Pass 2 — integration test fallback: when test files exist in the PR but
+     * none name-match a given production file, we credit each test file as
+     * covering one production file (capped at prodFiles). This avoids the false
+     * 100% gap for integration-test repos (e.g. Fineract, Spring) where test
+     * files like FixedDepositTest.java or test_transactions.py legitimately
+     * cover multiple production files but share no base-name prefix.
      *
      * Rationale: Mockus et al. (2000) found that code changes accompanied by
      * test changes have ~50% lower post-merge defect rates.
      */
-    private long countProdFilesWithTestCoverage(List<FileChangeSummary> files) {
+    double computeTestCoverageGap(List<FileChangeSummary> files) {
         List<FileChangeSummary> prodFiles = files.stream()
                                                     .filter(f -> !isTestFile(f.getFilename()))
                                                     .toList();
+        if (prodFiles.isEmpty()) return 0.0;
 
         List<FileChangeSummary> testFiles = files.stream()
                                                     .filter(f -> isTestFile(f.getFilename()))
                                                     .toList();
+        if (testFiles.isEmpty()) return 1.0;
 
-        if (testFiles.isEmpty()) return 0;
+        // Pass 1: named match — track which test files already got credit
+        java.util.Set<String> consumedTestPaths = new java.util.HashSet<>();
+        long namedMatches = prodFiles.stream()
+                .filter(prod -> {
+                    String baseName = extractBaseName(prod.getFilename()).toLowerCase();
+                    return testFiles.stream().anyMatch(test -> {
+                        boolean match = test.getFilename().toLowerCase().contains(baseName);
+                        if (match) consumedTestPaths.add(test.getFilename());
+                        return match;
+                    });
+                })
+                .count();
 
-        return prodFiles.stream()
-                       .filter(prod -> {
-                           String baseName = extractBaseName(prod.getFilename()).toLowerCase();
-                           return testFiles.stream().anyMatch(test ->
-                                                                      test.getFilename().toLowerCase().contains(baseName));
-                       })
-                       .count();
+        // Pass 2: integration-test fallback — only test files not already claimed by
+        // a named match contribute here, so a unit test can't double-count.
+        long unusedTestFiles = testFiles.stream()
+                .filter(t -> !consumedTestPaths.contains(t.getFilename()))
+                .count();
+        long uncoveredByName  = prodFiles.size() - namedMatches;
+        long integrationCredit = Math.min(uncoveredByName, unusedTestFiles);
+        long totalCovered = namedMatches + integrationCredit;
+
+        return 1.0 - ((double) totalCovered / prodFiles.size());
     }
 
-    private boolean isTestFile(String filename) {
+    /**
+     * Detect test files across all major languages and project layouts.
+     * Covers standard unit-test naming conventions, pytest-style prefix,
+     * integration-test source trees, and JS/TS spec layouts.
+     */
+    boolean isTestFile(String filename) {
         if (filename == null) return false;
         String lower = filename.toLowerCase();
-        return lower.contains("/test/")
-                       || lower.endsWith("test.java")
-                       || lower.endsWith("spec.js")
-                       || lower.endsWith("_test.py")
-                       || lower.endsWith("spec.rb")
-                       || lower.endsWith("test.ts");
+
+        // ── Path-segment patterns (strongest signal) ─────────────────────────
+        // GitHub API paths are repo-root-relative (no leading /), so normalise
+        // by prepending "/" to make all segment checks uniform.
+        String p = "/" + lower;
+        if (p.contains("/test/") || p.contains("/tests/")
+                || p.contains("/__tests__/") || p.contains("/test-")) return true;
+
+        // ── Java / Kotlin ─────────────────────────────────────────────────────
+        // *Test.java, *Tests.java, *Spec.java, *IT.java (integration test)
+        if (lower.endsWith("test.java")  || lower.endsWith("tests.java")
+                || lower.endsWith("spec.java")  || lower.endsWith("it.java")
+                || lower.endsWith("test.kt")    || lower.endsWith("tests.kt")
+                || lower.endsWith("spec.kt")) return true;
+
+        // ── Python ────────────────────────────────────────────────────────────
+        // pytest: test_*.py prefix OR *_test.py / *_tests.py suffix
+        String fileOnly = lower.substring(lower.lastIndexOf('/') + 1);
+        if (fileOnly.startsWith("test_") || lower.endsWith("_test.py")
+                || lower.endsWith("_tests.py")) return true;
+
+        // ── JavaScript / TypeScript ───────────────────────────────────────────
+        // *.test.js, *.spec.js, *.test.ts, *.spec.ts (and jsx/tsx variants)
+        if (lower.endsWith(".test.js")  || lower.endsWith(".spec.js")
+                || lower.endsWith(".test.jsx") || lower.endsWith(".spec.jsx")
+                || lower.endsWith(".test.ts")  || lower.endsWith(".spec.ts")
+                || lower.endsWith(".test.tsx") || lower.endsWith(".spec.tsx")) return true;
+
+        // ── Ruby ──────────────────────────────────────────────────────────────
+        if (lower.endsWith("_spec.rb") || lower.endsWith("_test.rb")) return true;
+
+        // ── Go ────────────────────────────────────────────────────────────────
+        if (lower.endsWith("_test.go")) return true;
+
+        // ── Rust ──────────────────────────────────────────────────────────────
+        // Rust tests live in the same file (mod tests), but test files in
+        // tests/ are caught by the /tests/ path check above.
+
+        return false;
     }
 
     private String extractBaseName(String path) {

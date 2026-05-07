@@ -1,6 +1,5 @@
 package io.contextguard.client;
 
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -16,22 +15,16 @@ import org.springframework.web.client.RestTemplate;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
  * HTTP client for GitHub REST API v3.
  *
- * Documentation: https://docs.github.com/en/rest
- *
- * Authentication:
- * - Public repos: No token required (but rate-limited to 60 req/hour)
- * - Private repos: Requires GITHUB_TOKEN environment variable
- *
- * Rate Limits:
- * - Unauthenticated: 60 requests/hour
- * - Authenticated: 5000 requests/hour
+ * Authentication priority (highest to lowest):
+ *   1. Per-request override token (from the user's OAuth session)
+ *   2. Server-level GITHUB_TOKEN env var
+ *   3. Unauthenticated (60 req/hr limit — fine for demos, rate-limited in CI)
  */
 @Component
 @Slf4j
@@ -40,168 +33,175 @@ public class GitHubApiClient {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final String baseUrl;
-    private final String token;
+    private final String serverToken;
 
     public GitHubApiClient(
             RestTemplate restTemplate,
             ObjectMapper objectMapper,
             @Value("${github.api.base-url}") String baseUrl,
-            @Value("${github.api.token:}") String token) {
+            @Value("${github.api.token:}") String serverToken) {
 
-        this.restTemplate = restTemplate;
-        this.objectMapper = objectMapper;
-        this.baseUrl = baseUrl;
-        this.token = token;
+        this.restTemplate  = restTemplate;
+        this.objectMapper  = objectMapper;
+        this.baseUrl       = baseUrl;
+        this.serverToken   = serverToken;
+
+        if (serverToken == null || serverToken.isBlank()) {
+            log.warn("[github] No server-level GITHUB_TOKEN configured — unauthenticated calls (60 req/hr)");
+        }
     }
 
-    /**
-     * Fetch PR metadata.
-     *
-     * Endpoint: GET /repos/{owner}/{repo}/pulls/{pull_number}
-     * Docs: https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
-     */
     public JsonNode getPullRequest(String owner, String repo, Integer prNumber) {
+        return getPullRequest(owner, repo, prNumber, null);
+    }
 
-        String url = String.format("%s/repos/%s/%s/pulls/%d",
-                baseUrl, owner, repo, prNumber);
-
+    public JsonNode getPullRequest(String owner, String repo, Integer prNumber, String overrideToken) {
+        String url = String.format("%s/repos/%s/%s/pulls/%d", baseUrl, owner, repo, prNumber);
+        log.debug("[github] GET {}", url);
         try {
             ResponseEntity<String> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    createHttpEntity(),
-                    String.class
-            );
-
+                    url, HttpMethod.GET, entityWith(overrideToken), String.class);
             return objectMapper.readTree(response.getBody());
 
         } catch (HttpClientErrorException.NotFound e) {
-            throw new PRNotFoundException(
-                    String.format("PR not found: %s/%s#%d", owner, repo, prNumber));
+            throw new PRNotFoundException(String.format("PR not found: %s/%s#%d", owner, repo, prNumber));
+
+        } catch (HttpClientErrorException e) {
+            log.error("[github] GET {} → HTTP {} — body: {}", url,
+                    e.getStatusCode().value(), e.getResponseBodyAsString());
+            throw new GitHubApiException(
+                    String.format("GitHub API error %d fetching PR metadata: %s",
+                            e.getStatusCode().value(), extractGitHubMessage(e.getResponseBodyAsString())), e);
+
         } catch (Exception e) {
-            throw new GitHubApiException("Failed to fetch PR metadata", e);
+            log.error("[github] Unexpected error fetching PR metadata from {}: {}", url, e.getMessage(), e);
+            throw new GitHubApiException("Failed to fetch PR metadata: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * Fetch PR files with diffs.
-     *
-     * Endpoint: GET /repos/{owner}/{repo}/pulls/{pull_number}/files
-     * Docs: https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
-     *
-     * Note: GitHub paginates results (max 100 files per page).
-     * For simplicity, we only fetch the first page.
-     * Production implementation should handle pagination.
-     */
     public List<JsonNode> getPullRequestFiles(String owner, String repo, Integer prNumber) {
+        return getPullRequestFiles(owner, repo, prNumber, null);
+    }
 
-        String url = String.format("%s/repos/%s/%s/pulls/%d/files?per_page=100",
-                baseUrl, owner, repo, prNumber);
-
+    public List<JsonNode> getPullRequestFiles(String owner, String repo, Integer prNumber, String overrideToken) {
+        String url = String.format("%s/repos/%s/%s/pulls/%d/files?per_page=100", baseUrl, owner, repo, prNumber);
         try {
             ResponseEntity<String> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    createHttpEntity(),
-                    String.class
-            );
-
+                    url, HttpMethod.GET, entityWith(overrideToken), String.class);
             JsonNode filesArray = objectMapper.readTree(response.getBody());
 
-            // Convert JsonNode array to List<JsonNode>
             List<JsonNode> files = new java.util.ArrayList<>();
             filesArray.forEach(files::add);
-
             return files;
 
+        } catch (HttpClientErrorException e) {
+            log.error("[github] GET {} → HTTP {} — body: {}", url,
+                    e.getStatusCode().value(), e.getResponseBodyAsString());
+            throw new GitHubApiException(
+                    String.format("GitHub API error %d fetching PR files: %s",
+                            e.getStatusCode().value(), extractGitHubMessage(e.getResponseBodyAsString())), e);
+
         } catch (Exception e) {
-            throw new GitHubApiException("Failed to fetch PR files", e);
+            log.error("[github] Unexpected error fetching PR files from {}: {}", url, e.getMessage(), e);
+            throw new GitHubApiException("Failed to fetch PR files: " + e.getMessage(), e);
         }
     }
 
     /**
-     * Create HTTP entity with authorization header.
-     *
-     * If GITHUB_TOKEN is set, adds "Authorization: Bearer {token}" header.
-     * Also sets Accept header for GitHub API v3.
+     * Returns filenames changed on {@code baseBranch} since it diverged from {@code headSha}.
+     * Using 3-dot compare (head...base): lists commits on base not reachable from head.
+     * The files in those commits are the ones base changed after the PR was created.
+     * Intersection of this set with PR files = potential conflict candidates.
      */
-    private HttpEntity<String> createHttpEntity() {
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Accept", "application/vnd.github.v3+json");
-
-        if (token != null && !token.isEmpty()) {
-            headers.set("Authorization", "Bearer " + token);
+    public List<String> getFilesChangedOnBase(
+            String owner, String repo, String headSha, String baseBranch, String overrideToken) {
+        String encodedBase = URLEncoder.encode(baseBranch, StandardCharsets.UTF_8);
+        String url = String.format("%s/repos/%s/%s/compare/%s...%s?per_page=100",
+                baseUrl, owner, repo, headSha, encodedBase);
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url, HttpMethod.GET, entityWith(overrideToken), String.class);
+            JsonNode body = objectMapper.readTree(response.getBody());
+            List<String> files = new java.util.ArrayList<>();
+            JsonNode filesNode = body.get("files");
+            if (filesNode != null && filesNode.isArray()) {
+                filesNode.forEach(f -> {
+                    JsonNode fn = f.get("filename");
+                    if (fn != null) files.add(fn.asText());
+                });
+            }
+            return files;
+        } catch (Exception e) {
+            log.warn("[github] compare {}/{}  {}...{} failed: {}", owner, repo, headSha, baseBranch, e.getMessage());
+            return List.of();
         }
-
-        return new HttpEntity<>(headers);
     }
 
-    public String getFileContent(String fullRepoName, String path, String ref, String token) {
-
+    public String getFileContent(String fullRepoName, String path, String ref, String overrideToken) {
         try {
-            // Encode path safely WITHOUT encoding '/'
-
             String[] parts = fullRepoName.split("/");
             if (parts.length != 2) {
                 throw new IllegalArgumentException("Invalid repo name: " + fullRepoName);
             }
-
-            String owner = parts[0];
-            String repo = parts[1];
+            String owner    = parts[0];
+            String repo     = parts[1];
             String safePath = Arrays.stream(path.split("/"))
-                                      .map(segment -> URLEncoder.encode(segment, StandardCharsets.UTF_8))
-                                      .collect(Collectors.joining("/"));
-
+                    .map(seg -> URLEncoder.encode(seg, StandardCharsets.UTF_8))
+                    .collect(Collectors.joining("/"));
             String encodedRef = URLEncoder.encode(ref, StandardCharsets.UTF_8);
 
             String url = String.format(
                     "https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
-                    owner,
-                    repo,
-                    safePath,
-                    encodedRef
-            );
+                    owner, repo, safePath, encodedRef);
 
-            HttpHeaders headers = new HttpHeaders();
-            if (token != null && !token.isBlank()) {
-                headers.setBearerAuth(token); // correct modern auth
-            }
-            else
-            {
-                headers.setBearerAuth(this.token);
-            }
-
-            // Request raw file content
+            HttpHeaders headers = buildHeaders(overrideToken);
             headers.set(HttpHeaders.ACCEPT, "application/vnd.github.v3.raw");
 
             ResponseEntity<String> resp = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    new HttpEntity<>(headers),
-                    String.class
-            );
+                    url, HttpMethod.GET, new HttpEntity<>(headers), String.class);
 
             if (resp.getStatusCode().is2xxSuccessful()) {
                 return resp.getBody();
             }
-
-            log.warn("Non-2xx response while fetching {}: {}", path, resp.getStatusCode());
+            log.warn("[github] Non-2xx {} fetching {}: {}", resp.getStatusCode(), path, resp.getBody());
 
         } catch (HttpClientErrorException.NotFound e) {
-            // File genuinely does not exist at this ref
-            log.warn("File not found at ref {}: {}", ref, path);
-
+            log.warn("[github] File not found at ref {}: {}", ref, path);
         } catch (HttpClientErrorException e) {
-            // Other GitHub errors (403, 422, etc.)
-            log.warn("GitHub API error fetching {}: {} {}", path,
-                    e.getStatusCode(), e.getResponseBodyAsString());
-
+            log.warn("[github] API error fetching {}: {} — {}",
+                    path, e.getStatusCode(), e.getResponseBodyAsString());
         } catch (Exception e) {
-            log.warn("Unexpected error fetching file {}: {}", path, e.getMessage(), e);
+            log.warn("[github] Unexpected error fetching {}: {}", path, e.getMessage(), e);
         }
-
         return null;
     }
 
+    // ── helpers ────────────────────────────────────────────────────────────────
+
+    private HttpEntity<String> entityWith(String overrideToken) {
+        return new HttpEntity<>(buildHeaders(overrideToken));
+    }
+
+    private HttpHeaders buildHeaders(String overrideToken) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Accept", "application/vnd.github.v3+json");
+
+        String token = (overrideToken != null && !overrideToken.isBlank())
+                ? overrideToken : serverToken;
+
+        if (token != null && !token.isBlank()) {
+            headers.set("Authorization", "Bearer " + token);
+        }
+        return headers;
+    }
+
+    private String extractGitHubMessage(String body) {
+        try {
+            JsonNode node = objectMapper.readTree(body);
+            if (node.has("message")) return node.get("message").asText();
+        } catch (Exception ignored) {
+            // body wasn't JSON
+        }
+        return body != null && body.length() > 200 ? body.substring(0, 200) : body;
+    }
 }

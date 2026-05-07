@@ -29,7 +29,7 @@ import {
   AlertTriangle, Brain, ChevronDown, ChevronUp,
   Clock, BookOpen, FlaskConical, TrendingUp,
   ShieldAlert, FileSearch, Layers, Files, Target,
-  BarChart2, Zap, Info, ArrowRight, CheckCircle2,
+  BarChart2, Zap, Info, ArrowRight, CheckCircle2, ScanLine,
 } from "lucide-react";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -54,11 +54,13 @@ interface RiskBreakdown {
   rawComplexityDelta?: number;
   rawCriticalDensity?: number;
   rawTestCoverageGap?: number;
+  rawSastFindings?: number;
   averageRiskContribution?: number;
   peakRiskContribution?: number;
   complexityContribution?: number;
   criticalPathDensityContribution?: number;
   testCoverageGapContribution?: number;
+  sastFindingsContribution?: number;
 }
 
 interface DifficultyBreakdown {
@@ -105,6 +107,7 @@ const ICONS: Record<string, React.ReactNode> = {
   complexity:  <FlaskConical size={14} />,
   criticalPath:<ShieldAlert size={14} />,
   testGap:     <FileSearch size={14} />,
+  sast:        <ScanLine size={14} />,
   cognitive:   <Brain size={14} />,
   size:        <Zap size={14} />,
   context:     <Layers size={14} />,
@@ -141,6 +144,7 @@ function buildRiskSignals(rb: RiskBreakdown): SignalInterpretation[] {
   const cc   = rb.rawComplexityDelta ?? 0;
   const cd   = rb.rawCriticalDensity ?? 0;
   const tg   = rb.rawTestCoverageGap ?? 0;
+  const sast = rb.rawSastFindings ?? 0;
 
   return [
     {
@@ -167,12 +171,18 @@ function buildRiskSignals(rb: RiskBreakdown): SignalInterpretation[] {
     },
     {
       key:"complexity", label:"Cyclomatic Complexity Δ",
-      rawValue: cc, unit:"new decision branches added to the codebase",
+      // CYCLOMATIC (McCabe 1976) — flat branch count, nesting-unaware.
+      // Predicts DEFECT PROBABILITY. Each if/for/while/&&/|| adds +1 regardless
+      // of how deeply nested it is. Distinct from Cognitive Complexity (difficulty
+      // panel) which penalises nesting and predicts COMPREHENSION TIME.
+      rawValue: cc, unit:"flat execution paths added (nesting-unaware) — predicts defect probability, not review effort",
       signalVerdict: cc>=40?"CRITICAL":cc>=15?"HIGH":cc>=5?"MEDIUM":"LOW",
       whatItMeans: cc===0
-        ? "No new decision branches added. All changed methods are as complex as before."
-        : `+${cc} decision branches added. Each branch is a code path the reviewer must mentally trace. Signal is normalized as ${cc}/(20+${cc}) = ${(cc/(20+cc)).toFixed(3)} so complexity never inflates beyond 1.0.`,
-      evidence:"Banker et al. (1993), MIS Quarterly — each +1 cyclomatic complexity unit ≈ +0.15 defects/KLOC. Campbell (2018) — higher complexity = more missed defects in review. Pivot of 20 means +20 CC = 0.50 signal (moderate).",
+        ? "No new execution paths added (cyclomatic, nesting-unaware). Changed methods have the same defect surface as before."
+        : `+${cc} new execution paths (flat count — each if/for/&&/|| adds 1 regardless of nesting depth). `
+          + `Banker et al.: each +1 CC ≈ +0.15 defects/KLOC → projected +${Math.round(cc * 0.15)} defects/KLOC increase. `
+          + `This is a defect-probability signal, not a readability signal — see the Difficulty panel for comprehension cost.`,
+      evidence:"Banker et al. (1993), MIS Quarterly — each +1 cyclomatic CC unit ≈ +0.15 defects/KLOC. McCabe (1976): CC = 1 + decision_points, nesting depth not penalised. This differs from Cognitive Complexity (Difficulty panel) which penalises nested branches — the two metrics answer different questions.",
       weight:0.20, normalizedSignal: cc/(20+cc), weightedContribution:rb.complexityContribution??0,
     },
     {
@@ -197,6 +207,19 @@ function buildRiskSignals(rb: RiskBreakdown): SignalInterpretation[] {
       evidence:"Mockus & Votta (2000), ICSM — code changes without test changes have 2× the post-merge defect rate. Weight 0.10 (lower) because test files may legitimately live in a separate PR or repo.",
       weight:0.10, normalizedSignal:tg, weightedContribution:rb.testCoverageGapContribution??0,
     },
+    {
+      key:"sast", label:"SAST Findings",
+      rawValue: sast,
+      unit:"confirmed findings from Semgrep OSS static analysis  (pivot: 3 findings = 0.50 signal)",
+      signalVerdict: sast===0?"LOW":sast<=2?"MEDIUM":sast<=5?"HIGH":"CRITICAL",
+      whatItMeans: sast===0
+        ? "Semgrep found no security or bug-pattern findings in the changed files. This does not guarantee absence of issues — rules cover known patterns only."
+        : `${sast} confirmed SAST finding${sast>1?"s":""} — ground truth, not inference. Each represents a code pattern matching a known vulnerability class (CWE/OWASP). See the Static Analysis section in the AI narrative for details.`,
+      evidence:"Semgrep OSS (2,000+ rules covering OWASP Top 10, CWE, language-specific best practices). Unlike complexity metrics, SAST findings are factual: the pattern exists at an exact file and line. Weight 0.10 — direct security evidence at the same weight as test coverage gap.",
+      weight:0.10,
+      normalizedSignal: sast/(sast+3),
+      weightedContribution:rb.sastFindingsContribution??0,
+    },
   ];
 }
 
@@ -210,12 +233,19 @@ function buildDiffSignals(db: DifficultyBreakdown): SignalInterpretation[] {
   return [
     {
       key:"cognitive", label:"Cognitive Complexity",
-      rawValue: cc, unit:"cognitive complexity units added  (weight 0.35 — primary driver)",
+      // COGNITIVE (Campbell 2018) — nesting-penalised score.
+      // Predicts COMPREHENSION TIME. A branch nested inside another branch scores
+      // 1 (structural) + 1 (nesting penalty) = 2, while two sequential branches
+      // each score 1. Distinct from Cyclomatic Complexity (risk panel) which is a
+      // flat count and predicts defect probability, not reviewer effort.
+      rawValue: cc, unit:"nesting-penalised units (deeper nests score higher) — predicts comprehension time, not defect probability",
       signalVerdict: cc>=40?"CRITICAL":cc>=20?"HIGH":cc>=8?"MEDIUM":"LOW",
       whatItMeans: cc===0
-        ? "No new cognitive complexity. The changes are structurally flat and easy to follow."
-        : `+${cc} units of new branching logic the reviewer must mentally trace. This is the single strongest predictor of review comprehension time. Signal = ${cc}/(15+${cc}) = ${(cc/(15+cc)).toFixed(3)}.`,
-      evidence:"Campbell (2018), SonarSource — cognitive complexity better predicts review effort than cyclomatic complexity because it penalises deeply nested branches more. Bacchelli & Bird (2013), ICSE — reviewer comprehension time dominates total review cost, not discussion time. Pivot 15 means +15 CC = 0.50 signal.",
+        ? "Cognitive complexity unchanged (nesting-penalised). Changed methods are no harder to mentally follow than before."
+        : `+${cc} cognitive units (nesting-penalised — an if-inside-if scores more than two sequential ifs). `
+          + `This is the single strongest predictor of how long the reviewer will spend on comprehension, not on reading. `
+          + `Unlike cyclomatic complexity (risk panel), this directly models the difficulty of holding nested conditions in working memory.`,
+      evidence:"Campbell (2018), SonarSource — cognitive complexity outperforms flat cyclomatic CC at predicting review effort because nesting depth is the key driver of working-memory load, not raw branch count. Bacchelli & Bird (2013), ICSE — reviewer comprehension time is the dominant cost in code review. This is why it carries weight 0.35 — more than any other difficulty signal.",
       weight:0.35, normalizedSignal:cc/(15+cc), weightedContribution:db.cognitiveContribution??0,
     },
     {

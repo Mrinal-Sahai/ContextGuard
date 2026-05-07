@@ -80,6 +80,24 @@ public class LLMSequenceDiagramService {
     static final int MAX_ARROWS       = 25;
     static final int MAX_ALT_BLOCKS   = 5;
 
+    // Class names that are library/runtime types, not architectural services.
+    // These must never appear as diagram participants — they waste the budget.
+    private static final Set<String> LIBRARY_CLASS_NAMES = Set.of(
+        // Java standard / wrapper types
+        "String", "Integer", "Long", "Boolean", "Double", "Float", "Object", "Void",
+        // Java collections
+        "List", "Map", "Set", "Optional", "Collection", "Stream", "Iterator",
+        // Jackson / JSON types (common in Spring Boot codebases)
+        "JsonNode", "ObjectNode", "ArrayNode", "JsonObject", "JsonArray",
+        // Spring HTTP types
+        "ResponseEntity", "HttpHeaders", "HttpEntity", "MultiValueMap",
+        // Node.js built-in modules (leak through TS/JS/Go parsing)
+        "fs", "path", "http", "https", "url", "json", "crypto", "os", "util",
+        "Buffer", "process", "console",
+        // Common single-identifier leaks
+        "line", "data", "result", "response", "error", "node", "edge", "value"
+    );
+
     private final AIRouter aiRouter;
     private final SequenceDiagramRenderer fallbackRenderer;
 
@@ -93,18 +111,27 @@ public class LLMSequenceDiagramService {
     // ─────────────────────────────────────────────────────────────────────────
 
     public String generate(CallGraphDiff diff, PRMetadata metadata, AIProvider provider) {
-        return generate(diff, metadata, null, provider);
+        return generate(diff, metadata, null, provider, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    public String generate(CallGraphDiff diff, PRMetadata metadata,
+                           PRIntelligenceResponse intelligence, AIProvider provider) {
+        return generate(diff, metadata, intelligence, provider, MAX_PARTICIPANTS, MAX_ARROWS);
     }
 
     /**
      * Full-context version — uses risk and difficulty assessments to annotate
      * hotspot interactions in the diagram.
+     * @param maxParticipants per-request participant budget (default: MAX_PARTICIPANTS=10)
+     * @param maxArrows       per-request arrow budget (default: MAX_ARROWS=25)
      */
     public String generate(
             CallGraphDiff diff,
             PRMetadata metadata,
             PRIntelligenceResponse intelligence,
-            AIProvider provider) {
+            AIProvider provider,
+            int maxParticipants,
+            int maxArrows) {
 
         try {
 
@@ -115,17 +142,17 @@ public class LLMSequenceDiagramService {
                 log.info("No call graph edges detected → switching to structural diagram mode");
                 return generateStructuralDiagram(diff, metadata, intelligence, provider);
             }
-            String prompt = buildPrompt(diff, metadata, intelligence);
+            String prompt = buildPrompt(diff, metadata, intelligence, maxParticipants, maxArrows);
             log.debug("Sequence diagram prompt: {} chars", prompt.length());
 
             AIClient client = aiRouter.getClient(provider);
             String raw       = client.generateSummary(prompt);
             String extracted = extractMermaidBlock(raw);
-            String validated = validateAndTrim(extracted);
+            String validated = validateAndTrim(extracted, maxParticipants, maxArrows);
 
             log.info("LLM sequence diagram generated: {} chars, " +
                              "budget: participants≤{}, arrows≤{}, altBlocks≤{}",
-                    validated.length(), MAX_PARTICIPANTS, MAX_ARROWS, MAX_ALT_BLOCKS);
+                    validated.length(), maxParticipants, maxArrows, MAX_ALT_BLOCKS);
             return validated;
 
         } catch (Exception e) {
@@ -147,6 +174,15 @@ public class LLMSequenceDiagramService {
             CallGraphDiff diff,
             PRMetadata metadata,
             PRIntelligenceResponse intelligence) {
+        return buildPrompt(diff, metadata, intelligence, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    private String buildPrompt(
+            CallGraphDiff diff,
+            PRMetadata metadata,
+            PRIntelligenceResponse intelligence,
+            int maxParticipants,
+            int maxArrows) {
 
         StringBuilder p = new StringBuilder();
 
@@ -200,13 +236,24 @@ public class LLMSequenceDiagramService {
 
         // ── SECTION 4: SIZE BUDGET ────────────────────────────────────────────
         p.append("\n═══ SIZE BUDGET (HARD LIMITS) ═══\n");
-        p.append("Max participants (including actor + Database): ").append(MAX_PARTICIPANTS).append("\n");
-        p.append("Max arrows (forward + return combined):        ").append(MAX_ARROWS).append("\n");
+        p.append("Max participants (including actor + Database): ").append(maxParticipants).append("\n");
+        p.append("Max arrows (forward + return combined):        ").append(maxArrows).append("\n");
         p.append("Max alt/loop blocks:                           ").append(MAX_ALT_BLOCKS).append("\n");
         p.append("\nIf content exceeds limits:\n");
         p.append("  - Collapse ≥3 sequential calls to the same class into: Note over ClassName: [summary]\n");
         p.append("  - Show only the main happy path + one error/edge-case alt branch\n");
         p.append("  - Omit unchanged interactions entirely\n\n");
+
+        // ── LIBRARY PARTICIPANT FILTER ────────────────────────────────────────
+        p.append("═══ FORBIDDEN PARTICIPANTS (NEVER include these as diagram participants) ═══\n");
+        p.append("The following are runtime/library types, NOT architectural services.\n");
+        p.append("NEVER declare them as participant or actor. Ignore any edges to/from them:\n");
+        p.append("  JSON types:  JsonNode, ObjectNode, ArrayNode, JsonObject, JsonArray\n");
+        p.append("  Java stdlib: String, List, Map, Set, Optional, ResponseEntity, HttpHeaders\n");
+        p.append("  Node.js:     fs, path, http, https, url, json, crypto, os, util, Buffer\n");
+        p.append("  Variables:   line, data, result, response, error, node, edge, value\n");
+        p.append("  Rule: ANY lowercase single word (fs, path, json, line) is a variable, not a service.\n");
+        p.append("  Rule: Only include participants that are named classes in the project codebase.\n\n");
 
         // ── SECTION 5: MERMAID OUTPUT RULES ──────────────────────────────────
         p.append("═══ MERMAID OUTPUT RULES (ALL ARE STRICT) ═══\n\n");
@@ -237,31 +284,52 @@ public class LLMSequenceDiagramService {
         p.append("   If a component is modified: write (MOD) in its label.\n\n");
 
         p.append("4. Arrow syntax:\n");
-        p.append("   Forward call:   A ->> B: actionLabel()\n");
+        p.append("   Forward call:   A ->> B: actionLabel\n");
         p.append("   Return:         A -->> B: result\n");
-        p.append("   Self-call:      A ->> A: internalProcess()\n");
-        p.append("   DO NOT use activation markers (+ -) — they cause rendering failures.\n\n");
+        p.append("   Self-call:      A ->> A: internalProcess\n\n");
+        p.append("   FORBIDDEN arrow patterns (cause parse failures):\n");
+        p.append("   ✗  A ->>+ B: label    (activation open marker +)\n");
+        p.append("   ✗  B ->>- A: label    (activation close marker -)\n");
+        p.append("   ✗  activate B         (explicit activate statement)\n");
+        p.append("   ✗  deactivate B       (explicit deactivate statement)\n");
+        p.append("   ✗  A -> B: label      (single dash — not valid sequenceDiagram syntax)\n\n");
 
-        p.append("5. Branching:\n");
-        p.append("   alt SomeBranch\n");
-        p.append("     A ->> B: call()\n");
-        p.append("   else OtherBranch\n");
-        p.append("     A ->> B: alternativeCall()\n");
+        p.append("5. Participant aliases — the short name used in arrows:\n");
+        p.append("   MUST contain only letters, digits, underscore: [A-Za-z0-9_]\n");
+        p.append("   FORBIDDEN in aliases: spaces . / \\ @ # ( ) [ ] { } < > - +\n");
+        p.append("   ✓  participant AuthSvc as \"Auth Service\"\n");
+        p.append("   ✗  participant Auth.Service as \"Auth Service\"   (dot in alias)\n");
+        p.append("   ✗  participant Auth Service as Auth Service      (space in alias, unquoted display)\n\n");
+
+        p.append("6. Branching — ONLY use when the PR adds a real conditional path:\n");
+        p.append("   alt Condition description\n");
+        p.append("     A ->> B: call\n");
+        p.append("   else Alternative description\n");
+        p.append("     A ->> B: otherCall\n");
         p.append("   end\n\n");
-        p.append("   IMPORTANT: Never put 'return' arrows inside alt/else blocks.\n");
-        p.append("   Close all alt blocks with 'end' before emitting returns.\n\n");
+        p.append("   Rules:\n");
+        p.append("   - Every alt MUST have a matching end\n");
+        p.append("   - Never nest more than 2 alt blocks\n");
+        p.append("   - Do NOT put return arrows inside alt/else blocks\n");
+        p.append("   - Do NOT fabricate error paths that are not in the AST evidence above\n\n");
 
-        p.append("6. Notes: Note over A,B: short description\n\n");
+        p.append("7. Notes:\n");
+        p.append("   Note over A: text           (single participant)\n");
+        p.append("   Note over A,B: text         (span two participants)\n");
+        p.append("   Text must be ≤ 60 chars. No line breaks inside Notes.\n\n");
 
-        p.append("7. Labels must be SHORT (≤ 40 chars). Use natural language, not code.\n");
-        p.append("   Good: 'Validate JWT token'   Bad: 'validateToken(jwt, issuer, expiry)'\n\n");
+        p.append("8. Labels must be ≤ 40 chars. Use natural language, not raw code.\n");
+        p.append("   ✓  Validate JWT token\n");
+        p.append("   ✗  validateToken(jwt, issuer, clock.instant(), ctx)\n");
+        p.append("   No HTML tags, no markdown, no backticks, no code comments.\n\n");
 
-        p.append("8. The last line must be a return from the entry point to Client.\n\n");
+        p.append("9. The last interaction must be a return arrow from the entry point back to Client.\n\n");
 
-        p.append("9. Add a summary Note at the end:\n");
-        p.append("   Note over [first non-Client participant]: Changes: +N added / ~M modified\n\n");
+        p.append("10. Add one summary Note as the final line:\n");
+        p.append("    Note over [first non-Client alias]: PR: +N added / ~M modified\n\n");
 
-        p.append("Return ONLY the Mermaid diagram. First line must be: ---\n");
+        p.append("CRITICAL: Output ONLY the Mermaid diagram. No explanation, no preamble.\n");
+        p.append("First line of output must be exactly: ---\n");
 
         return p.toString();
     }
@@ -310,9 +378,11 @@ public class LLMSequenceDiagramService {
         // --- NEW CALL RELATIONSHIPS ---
         if (!edges.isEmpty()) {
             p.append("\nNEW call relationships (use these for arrows):\n");
-            // Deduplicate by class pair to reduce noise
+            // Deduplicate by class pair and filter out library/primitive targets
             Set<String> seen = new LinkedHashSet<>();
             edges.stream()
+                    .filter(e -> !isLibraryClass(extractClass(e.getFrom()))
+                                      && !isLibraryClass(extractClass(e.getTo())))
                     .filter(e -> seen.add(extractClass(e.getFrom()) + "->" + extractClass(e.getTo())))
                     .limit(20)
                     .forEach(e ->
@@ -446,11 +516,23 @@ public class LLMSequenceDiagramService {
     }
 
     /**
-     * Validate and trim LLM output to enforce size budget.
+     * Validate and trim LLM output to enforce size budget and fix common LLM syntax errors.
      * Invalid or oversized content is trimmed deterministically.
+     *
+     * Fixes applied (in order):
+     *  1. Case-insensitive check for "sequenceDiagram" keyword
+     *  2. Activation markers (+/-) stripped — they cause parse failures in many Mermaid versions
+     *  3. Participant aliases sanitized to [A-Za-z0-9_]
+     *  4. Participant budget enforced
+     *  5. Alt/loop budget enforced; unclosed blocks closed
+     *  6. Arrow budget enforced
      */
     String validateAndTrim(String diagram) {
-        if (diagram == null || !diagram.contains("sequenceDiagram"))
+        return validateAndTrim(diagram, MAX_PARTICIPANTS, MAX_ARROWS);
+    }
+
+    String validateAndTrim(String diagram, int maxParticipants, int maxArrows) {
+        if (diagram == null || !diagram.toLowerCase().contains("sequencediagram"))
             throw new IllegalArgumentException("LLM output missing 'sequenceDiagram' keyword");
 
         String[]     lines        = diagram.split("\n");
@@ -460,15 +542,27 @@ public class LLMSequenceDiagramService {
         int          openAlts     = 0;   // track unclosed alt blocks
         List<String> out          = new ArrayList<>(lines.length);
 
-        for (String line : lines) {
+        for (String rawLine : lines) {
+            // Strip activation markers (+/-) that LLMs commonly output incorrectly.
+            // "->>+" and "->>" are valid; "->>" with a trailing "-" or leading "+" are not.
+            // Pattern: "A ->>+ B:" → "A ->> B:"  and  "A->>-B:" → "A -->> B:"
+            String line = rawLine
+                    .replace("->>+", "->>")   // remove activation open marker
+                    .replace("->-",  "-->>")  // malformed deactivation → return arrow
+                    .replace("->>-", "-->>");  // deactivation variant
+
             String t = line.trim();
 
             // Always pass through: front-matter, theme config, diagram keywords
             if (isFrontMatter(t)) { out.add(line); continue; }
 
-            // Participant / actor declarations
+            // Participant / actor declarations — filter library types before counting
             if (t.startsWith("participant ") || t.startsWith("actor ")) {
-                if (participants < MAX_PARTICIPANTS) { out.add(line); participants++; }
+                String alias = extractAliasFromParticipantLine(t);
+                if (!isLibraryClass(alias) && participants < maxParticipants) {
+                    out.add(sanitizeParticipantLine(line));
+                    participants++;
+                }
                 continue;
             }
 
@@ -494,7 +588,7 @@ public class LLMSequenceDiagramService {
 
             // Arrows — enforce budget
             if (t.contains("->>") || t.contains("-->>")) {
-                if (arrows < MAX_ARROWS) { out.add(line); arrows++; }
+                if (arrows < maxArrows) { out.add(line); arrows++; }
                 continue;
             }
 
@@ -506,6 +600,57 @@ public class LLMSequenceDiagramService {
         for (int i = 0; i < openAlts; i++) out.add("  end");
 
         return String.join("\n", out);
+    }
+
+    /**
+     * Sanitize a "participant Alias as DisplayName" line from LLM output.
+     *
+     * Problems LLMs commonly produce:
+     *  - Special chars in alias:  participant Foo.Bar as "Foo Bar"
+     *  - Unquoted display names:  participant FooSvc as Foo Service
+     *  - Banned chars in alias:   participant Auth/Service as Auth
+     *
+     * Fix:
+     *  - Extract alias and display parts
+     *  - Strip non-[A-Za-z0-9_] from alias
+     *  - Ensure display name is wrapped in double quotes
+     */
+    private String sanitizeParticipantLine(String line) {
+        String t = line.trim();
+        // Determine keyword (actor / participant) and strip it
+        String keyword;
+        String rest;
+        if (t.startsWith("actor ")) {
+            keyword = "actor";
+            rest    = t.substring("actor ".length()).trim();
+        } else {
+            keyword = "participant";
+            rest    = t.substring("participant ".length()).trim();
+        }
+
+        // Split on " as " (case-insensitive) to separate alias from display name
+        int asIdx = rest.toLowerCase().indexOf(" as ");
+        String alias;
+        String display;
+        if (asIdx >= 0) {
+            alias   = rest.substring(0, asIdx).trim();
+            display = rest.substring(asIdx + 4).trim();
+        } else {
+            alias   = rest.trim();
+            display = alias;
+        }
+
+        // Sanitize alias: keep only [A-Za-z0-9_], replace others with _
+        alias = alias.replaceAll("[^A-Za-z0-9_]", "_");
+        if (!alias.isEmpty() && Character.isDigit(alias.charAt(0))) alias = "_" + alias;
+        if (alias.isEmpty()) alias = "P" + (int)(Math.random() * 999);
+
+        // Ensure display name is quoted (strip existing quotes first, then re-add)
+        display = display.replaceAll("^[\"']|[\"']$", "").trim();
+
+        // Preserve leading indentation
+        String indent = line.substring(0, line.length() - line.stripLeading().length());
+        return indent + keyword + " " + alias + " as \"" + display + "\"";
     }
 
     private boolean isFrontMatter(String t) {
@@ -583,6 +728,23 @@ public class LLMSequenceDiagramService {
 
     private String safe(String s)           { return s != null ? s : ""; }
     private <T> List<T> safeList(List<T> l) { return l != null ? l : Collections.emptyList(); }
+
+    /** Returns true if the class name is a library/runtime type, not an architectural service. */
+    private boolean isLibraryClass(String name) {
+        if (name == null || name.isBlank()) return true;
+        if (LIBRARY_CLASS_NAMES.contains(name)) return true;
+        // Single all-lowercase word (e.g. "fs", "json", "path", "line") — a module or variable, not a class
+        if (Character.isLowerCase(name.charAt(0)) && name.equals(name.toLowerCase())) return true;
+        return false;
+    }
+
+    /** Extract the alias part from a "participant Alias as ..." or "actor Alias as ..." line. */
+    private String extractAliasFromParticipantLine(String line) {
+        String rest = line.startsWith("actor ") ? line.substring(6).trim()
+                                                 : line.substring(12).trim(); // "participant ".length() == 12
+        int asIdx = rest.toLowerCase().indexOf(" as ");
+        return asIdx >= 0 ? rest.substring(0, asIdx).trim() : rest.trim();
+    }
 
     private String generateStructuralDiagram(
             CallGraphDiff diff,
@@ -668,24 +830,25 @@ public class LLMSequenceDiagramService {
 
         d.append("  actor Client\n");
 
-        Set<String> participants = safeList(diff.getNodesModified())
-                                           .stream()
-                                           .map(n -> extractClass(n.getId()))
-                                           .collect(Collectors.toCollection(LinkedHashSet::new));
+        // Use LinkedHashMap to keep alias→displayName pairs together
+        Map<String, String> participants = safeList(diff.getNodesModified())
+                .stream()
+                .map(n -> extractClass(n.getId()))
+                .distinct()
+                .collect(Collectors.toMap(
+                        name -> name.replaceAll("[^A-Za-z0-9_]", "_"),  // safe alias
+                        name -> name,                                     // display name
+                        (a, b) -> a,
+                        java.util.LinkedHashMap::new));
 
-        for (String p : participants) {
-            d.append("  participant ").append(p).append("\n");
+        for (Map.Entry<String, String> e : participants.entrySet()) {
+            d.append("  participant ").append(e.getKey())
+             .append(" as \"").append(e.getValue()).append("\"\n");
         }
 
-        for (String p : participants) {
-
-            d.append("\n  Client ->> ")
-                    .append(p)
-                    .append(": Invoke modified logic\n");
-
-            d.append("  Note over ")
-                    .append(p)
-                    .append(": Internal behavior updated\n");
+        for (Map.Entry<String, String> e : participants.entrySet()) {
+            d.append("\n  Client ->> ").append(e.getKey()).append(": Invoke modified logic\n");
+            d.append("  Note over ").append(e.getKey()).append(": Internal behavior updated\n");
         }
 
         d.append("\n  Note over Client: No call graph changes detected\n");

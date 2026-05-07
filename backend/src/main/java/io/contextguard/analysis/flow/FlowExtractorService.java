@@ -1,9 +1,7 @@
 package io.contextguard.analysis.flow;
 
-import io.contextguard.dto.DiffMetrics;
+import io.contextguard.dto.*;
 import io.contextguard.dto.PRIdentifier;
-import io.contextguard.dto.PRIntelligenceResponse;
-import io.contextguard.dto.PRMetadata;
 import io.contextguard.model.PRAnalysisResult;
 import io.contextguard.repository.PRAnalysisRepository;
 import org.slf4j.Logger;
@@ -150,10 +148,20 @@ public class FlowExtractorService {
         diff.setLanguagesDetected(new ArrayList<>(headGraph.languages));
 
         // Step 4: Feed AST-accurate metrics back into DiffMetrics.
-        // This replaces the early heuristic values (rawCognitiveDelta=25 from ComplexityEstimator)
-        // with method-level accurate values from the full AST parse.
-        // Must run AFTER computeDifferential() so nodesAdded/Modified/Removed are populated.
         feedbackASTMetricsIntoDiffMetrics(intelligence.getMetrics(), baseGraph, headGraph, diff);
+
+        // Step 5: Surface compilation errors from head branch parse.
+        List<CompilationError> errors = headGraph.compilationErrors != null
+                ? headGraph.compilationErrors : List.of();
+        long errorCount   = errors.stream().filter(e -> "ERROR".equals(e.getSeverity())).count();
+        long warningCount = errors.stream().filter(e -> "WARNING".equals(e.getSeverity())).count();
+        intelligence.setCompilationStatus(CompilationStatus.builder()
+                .hasErrors(!errors.isEmpty())
+                .errorCount((int) errorCount)
+                .warningCount((int) warningCount)
+                .parsedLanguages(new ArrayList<>(headGraph.languages))
+                .errors(errors)
+                .build());
 
         logger.info("Differential computed: {} added, {} removed, {} modified nodes",
                 diff.getNodesAdded().size(),
@@ -529,10 +537,62 @@ public class FlowExtractorService {
 
         if (metrics == null) return;
 
-        // 1. AST-accurate complexity delta (replaces heuristic)
+        // 1. AST-accurate complexity delta — with base-completeness blending.
+        //
+        // ROOT CAUSE OF INFLATION (fixed here):
+        //   When this PR adds new files (files that didn't exist at the base SHA),
+        //   the base graph has no nodes for those files. computeComplexityDelta()
+        //   then counts all methods in those new files as "added CC" with nothing
+        //   to subtract — even for refactoring PRs that are net deletions.
+        //
+        //   Example from logs: base=4 nodes, head=34 nodes.
+        //   Raw AST delta = +226 (30 new methods counted as full additions).
+        //   Heuristic delta = 0 (CC(added_lines) - CC(deleted_lines) ≈ 0, correct).
+        //   The discrepancy signals an incomplete base parse, not real complexity.
+        //
+        // FIX — base-completeness weighting:
+        //   baseCompleteness = baseNodes / headNodes → [0, 1].
+        //   When baseCompleteness ≥ 0.80: base was mostly parsed; trust AST delta.
+        //   When baseCompleteness < 0.80: base was sparse; blend AST delta toward
+        //     the heuristic delta proportionally to how incomplete the base was.
+        //
+        //   blended = astDelta × completeness + heuristicDelta × (1 − completeness)
+        //
+        //   For the example: 226 × 0.12 + 0 × 0.88 = 27. Correct order of magnitude
+        //   for a refactoring PR that moves 90 lines and deletes 266.
+        //
+        // COMPLETENESS THRESHOLD (0.80):
+        //   Chosen because a PR that adds ≥20% new nodes is materially adding new
+        //   surface, at which point base incompleteness meaningfully distorts the delta.
+        //   Below 80%, the blending correction is necessary and significant.
+        int heuristicDelta = metrics.getComplexityDelta(); // original pre-AST value
         int astComplexityDelta = computeComplexityDelta(baseGraph, headGraph);
-        metrics.setComplexityDelta(astComplexityDelta);
-        logger.debug("AST complexity delta (replaces heuristic): {}", astComplexityDelta);
+
+        int effectiveDelta;
+        if (baseGraph.nodes.isEmpty()) {
+            // No base nodes at all — AST delta is entirely unanchored. Use heuristic.
+            effectiveDelta = heuristicDelta;
+            logger.debug("Base graph empty — using heuristic delta={}", heuristicDelta);
+        } else {
+            double baseCompleteness =
+                    (double) baseGraph.nodes.size() / Math.max(1, headGraph.nodes.size());
+
+            if (baseCompleteness >= 0.80) {
+                // Base is substantially complete — trust the AST.
+                effectiveDelta = astComplexityDelta;
+            } else {
+                // Base is sparse — blend toward heuristic proportionally.
+                effectiveDelta = (int) Math.round(
+                        astComplexityDelta * baseCompleteness
+                                + heuristicDelta * (1.0 - baseCompleteness));
+            }
+
+            logger.debug("Complexity delta: ast={}, heuristic={}, baseCompleteness={} → effective={}",
+                    astComplexityDelta, heuristicDelta,
+                    String.format("%.2f", baseCompleteness), effectiveDelta);
+        }
+
+        metrics.setComplexityDelta(effectiveDelta);
 
         // 2. Max call depth in changed subgraph
         List<FlowEdge> changedEdges = new ArrayList<>();
@@ -568,21 +628,33 @@ public class FlowExtractorService {
         metrics.setAvgChangedMethodCC(Math.round(avgChangedCC * 100.0) / 100.0);
 
         // 5 & 6. Public API surface changes.
-        //    "Public" proxy: return type is not void.
-        //    A non-void method has callers that depend on its return value.
-        //    Removing one is a breaking change; adding one expands the API surface.
+        //
+        //    For Java: FlowNode.isPublic is set from method.isPublic() in ASTParserService
+        //    — this is exact (JavaParser reads the actual access modifier keyword).
+        //
+        //    For bridge languages (TS/Python/Go/Ruby): isPublic is heuristic
+        //    (false only if name starts with '_' or '#'). Better than the old proxy but
+        //    not exact — treat the count as "approximate" for non-Java PRs.
+        //
+        //    Old (broken) proxy was: returnType != null && !void
+        //    Problem: counted private String get() as "public API";
+        //             missed public void notify() entirely.
         long removedPublic = safeList(diff.getNodesRemoved()).stream()
-                                     .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
+                                     .filter(FlowNode::isPublic)
                                      .count();
         long addedPublic = safeList(diff.getNodesAdded()).stream()
-                                   .filter(n -> n.getReturnType() != null && !"void".equalsIgnoreCase(n.getReturnType()))
+                                   .filter(FlowNode::isPublic)
                                    .count();
         metrics.setRemovedPublicMethods((int) removedPublic);
         metrics.setAddedPublicMethods((int) addedPublic);
 
-        logger.debug("AST feedback complete: complexityDelta={}, maxDepth={}, hotspots={}, " +
+        // Mark metrics as AST-accurate so the frontend can show the "AST-backed" badge
+        // and so DifficultyScoringEngine knows to trust avgChangedMethodCC over heuristic CC.
+        metrics.setAstAccurate(true);
+
+        logger.debug("AST feedback complete: effectiveDelta={}, maxDepth={}, hotspots={}, " +
                              "avgCC={}, removedPublic={}, addedPublic={}",
-                astComplexityDelta, maxDepth, hotspots.size(),
+                effectiveDelta, maxDepth, hotspots.size(),
                 metrics.getAvgChangedMethodCC(), removedPublic, addedPublic);
     }
     private <T> List<T> safeList(List<T> list) { return list != null ? list : Collections.emptyList(); }
