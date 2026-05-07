@@ -62,17 +62,6 @@ semgrep:
   timeout-seconds: ${SEMGREP_TIMEOUT_SECONDS:60}
 
 # ── Bridge configuration ──────────────────────────────────────────────────────
-bridge:
-  tree-sitter:
-    url: ${BRIDGE_TREE_SITTER_URL:http://localhost:3000}
-
-treesitter:
-  bridge:
-    timeout-ms: 10000
-  batch:
-    timeout-ms: 60000
-
-# ── Bridge configuration ──────────────────────────────────────────────────────
 # Docker: docker-compose.yml overrides bridge.*.url with container-network URLs.
 # Local dev: set BRIDGE_TREE_SITTER_URL and BRIDGE_DART_URL env vars, or use
 #   the defaults below (point at localhost if running bridges locally).
